@@ -7,6 +7,13 @@ __pycache__/
 *.so
 
 # Distribution / packaging
+
+datasets/Jacquard_V2
+/models/
+_attempt_1/checkpoints
+_attempt_1/dataset_old_structure
+_attempt_2/weights_try_1
+
 .Python
 build/
 develop-eggs/
@@ -14,7 +21,6 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
 lib64/
 parts/
 sdist/
