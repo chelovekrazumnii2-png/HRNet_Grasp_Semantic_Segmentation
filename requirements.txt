@@ -1,6 +1,10 @@
 # Core
-torch>=2.0
-torchvision>=0.15
+# NOTE: install torch + torchvision SEPARATELY with the right CUDA index URL
+# *before* running this requirements file, e.g. for CUDA 12.6:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+# Plain `pip install torch` from PyPI yields a CPU-only build. See
+# https://pytorch.org/get-started/locally/ for the exact command for your
+# driver / CUDA combination.
 timm>=0.9.12
 
 # Data / IO
