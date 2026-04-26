@@ -23,6 +23,12 @@ import sys
 from copy import deepcopy
 from typing import Any, Dict
 
+# Make the package importable when this script is launched directly from the
+# repo root (e.g. ``python tools/train.py``) without setting PYTHONPATH.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
 import numpy as np
 import torch
 import yaml
