@@ -150,6 +150,16 @@ python tools/train.py --config configs/default.yaml \
 
 `--resume` загружает model + optimizer + scheduler + scaler + epoch counter, обучение продолжится со следующей эпохи. Для дообучения «с чистым оптимизатором» добавьте `--resume-model-only` — тогда восстановятся только веса модели.
 
+## Облачные варианты
+
+Готовые рецепты для трёх популярных платформ:
+
+- [`notebooks/colab_train.ipynb`](notebooks/colab_train.ipynb) — Google Colab (free T4 / Pro). Скачивает датасет с публичной ссылки Я.Диска прямо в `/content/`, чекпоинты пишутся в Google Drive (переживают сбросы сессии).
+- [`notebooks/kaggle_train.ipynb`](notebooks/kaggle_train.ipynb) — Kaggle Notebooks (бесплатно, 30 ч/нед на T4 ×2 / P100). Датасет один раз заливается как Kaggle Dataset, потом доступен read-only из любого ноутбука.
+- [`docs/yandex_datasphere.md`](docs/yandex_datasphere.md) — Yandex DataSphere (платно, рубли). T4 / V100 / A100, нативный доступ к Я.Диску и Object Storage.
+
+Все три варианта используют `--resume` для продолжения обучения после разрыва сессии.
+
 ## Маска grasp-захвата — почему compact-polygon, а не полный прямоугольник
 
 Каждая строка `*_grasps.txt` это `x;y;θ;w;h` — параметризация **одной позы
