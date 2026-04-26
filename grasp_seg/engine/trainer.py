@@ -1,6 +1,7 @@
 """Training engine with AMP + gradient accumulation."""
 from __future__ import annotations
 
+import csv
 import math
 import os
 from dataclasses import dataclass, field
@@ -39,6 +40,8 @@ class TrainerConfig:
     save_dir: str = "outputs/run"
     eval_every: int = 1
     target_metric: str = "miou_fg"  # which metric guides best-checkpointing
+    save_every_epoch: bool = True   # also write epoch_NNN.pth alongside last/best
+    metrics_csv: str = "metrics.csv"  # appended every epoch under save_dir
 
 
 def _build_optimizer(model: nn.Module, cfg: TrainerConfig) -> torch.optim.Optimizer:
@@ -110,6 +113,31 @@ class Trainer:
         self.state = TrainState()
         self.logger = get_logger("trainer")
         os.makedirs(cfg.save_dir, exist_ok=True)
+        self._csv_path = os.path.join(cfg.save_dir, cfg.metrics_csv) if cfg.metrics_csv else None
+        self._csv_keys: list[str] = []  # columns lazily expand as new metrics show up
+
+    # ------------------------------------------------------------------
+    def load_checkpoint(self, path: str, *, load_optim: bool = True) -> None:
+        """Restore model + (optionally) optimizer / scheduler / scaler / state.
+
+        ``load_optim=False`` is useful for fine-tuning from a checkpoint while
+        starting a fresh optimizer schedule.
+        """
+        ckpt = torch.load(path, map_location=self.device)
+        self.model.load_state_dict(ckpt["model"])
+        if load_optim:
+            if "optimizer" in ckpt:
+                self.optimizer.load_state_dict(ckpt["optimizer"])
+            if "scheduler" in ckpt:
+                self.scheduler.load_state_dict(ckpt["scheduler"])
+            if "scaler" in ckpt:
+                self.scaler.load_state_dict(ckpt["scaler"])
+            if "state" in ckpt:
+                for k, v in ckpt["state"].items():
+                    if hasattr(self.state, k):
+                        setattr(self.state, k, v)
+        self.logger.info(f"loaded checkpoint from {path} (resume_epoch={self.state.epoch + 1}, "
+                         f"global_step={self.state.global_step})")
 
     # ------------------------------------------------------------------
     def train_one_epoch(self) -> dict:
@@ -154,12 +182,14 @@ class Trainer:
 
     # ------------------------------------------------------------------
     def fit(self) -> TrainState:
-        for epoch in range(self.cfg.epochs):
+        start_epoch = self.state.epoch if self.state.global_step > 0 else 0
+        for epoch in range(start_epoch, self.cfg.epochs):
             self.state.epoch = epoch
             train_metrics = self.train_one_epoch()
             self.logger.info(f"[epoch {epoch}] train: " +
                              " ".join(f"{k}={v:.4f}" for k, v in train_metrics.items()))
 
+            val_metrics: dict = {}
             if self.evaluate_fn is not None and self.val_loader is not None \
                     and (epoch + 1) % self.cfg.eval_every == 0:
                 val_metrics = self.evaluate_fn(self.model, self.val_loader, self.device, self.amp)
@@ -171,8 +201,30 @@ class Trainer:
                     self.state.best_epoch = epoch
                     self.save_checkpoint("best.pth", val_metrics)
 
-            self.save_checkpoint("last.pth", {})
+            self.save_checkpoint("last.pth", val_metrics)
+            if self.cfg.save_every_epoch:
+                self.save_checkpoint(f"epoch_{epoch:03d}.pth", val_metrics)
+            self._append_metrics_row(epoch, train_metrics, val_metrics)
         return self.state
+
+    # ------------------------------------------------------------------
+    def _append_metrics_row(self, epoch: int, train_metrics: dict, val_metrics: dict) -> None:
+        if not self._csv_path:
+            return
+        row = {"epoch": epoch, "global_step": self.state.global_step,
+               "lr": self.optimizer.param_groups[0]["lr"]}
+        row.update({f"train_{k}": float(v) for k, v in train_metrics.items()})
+        row.update({f"val_{k}": float(v) for k, v in val_metrics.items()})
+        # expand the column set if a new metric appeared this epoch (rare).
+        for k in row:
+            if k not in self._csv_keys:
+                self._csv_keys.append(k)
+        write_header = not os.path.exists(self._csv_path)
+        with open(self._csv_path, "a", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=self._csv_keys, extrasaction="ignore")
+            if write_header:
+                w.writeheader()
+            w.writerow(row)
 
     # ------------------------------------------------------------------
     def save_checkpoint(self, name: str, extra: dict) -> None:

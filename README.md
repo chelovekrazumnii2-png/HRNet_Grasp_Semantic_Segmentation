@@ -135,7 +135,20 @@ python tools/train.py --config configs/default.yaml dataset.input_mode=depth
 `Trainer` сохраняет:
 - `outputs/.../best.pth` (по `miou_fg`),
 - `outputs/.../last.pth` (после каждой эпохи),
+- `outputs/.../epoch_NNN.pth` для каждой эпохи (если `trainer.save_every_epoch=true`, по умолчанию включено — нужно для построения графиков обучения по чекпоинтам),
+- `outputs/.../metrics.csv` — построчная история train/val метрик и lr по эпохам (готова к загрузке в pandas/matplotlib),
 - `outputs/.../resolved_config.yaml` — фактический конфиг запуска.
+
+### Возобновление обучения
+
+```bash
+python tools/train.py --config configs/default.yaml \
+    dataset.splits_path=splits/jacquard_v2.json \
+    trainer.save_dir=outputs/hrnet_w18_rgbd_angle \
+    --resume outputs/hrnet_w18_rgbd_angle/last.pth
+```
+
+`--resume` загружает model + optimizer + scheduler + scaler + epoch counter, обучение продолжится со следующей эпохи. Для дообучения «с чистым оптимизатором» добавьте `--resume-model-only` — тогда восстановятся только веса модели.
 
 ## Маска grasp-захвата — почему compact-polygon, а не полный прямоугольник
 

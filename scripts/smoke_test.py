@@ -109,15 +109,36 @@ def _run_one_mode(mask_mode: str, root: str, splits_path: str, device: torch.dev
         loss_fn = MultiTaskGraspLoss(bce_pos_weight=5.0)
         eval_fn = evaluate_multitask
 
+    save_dir = os.path.join(root, f"out_{mask_mode}")
     trainer_cfg = TrainerConfig(
-        epochs=1, accum_steps=1, lr=1e-3, optimizer="adamw",
+        epochs=2, accum_steps=1, lr=1e-3, optimizer="adamw",
         scheduler="poly", warmup_epochs=0.0, log_interval=1,
-        save_dir=os.path.join(root, f"out_{mask_mode}"), eval_every=1,
+        save_dir=save_dir, eval_every=1,
+        save_every_epoch=True, metrics_csv="metrics.csv",
     )
     trainer = Trainer(model, loss_fn, train_loader, val_loader, trainer_cfg,
                       device, evaluate_fn=eval_fn, amp=device.type == "cuda")
     trainer.fit()
     logger.info(f"done, best metric={trainer.state.best_metric:.4f}")
+
+    # --- verify checkpoint side-effects ---
+    assert os.path.exists(os.path.join(save_dir, "epoch_000.pth"))
+    assert os.path.exists(os.path.join(save_dir, "epoch_001.pth"))
+    assert os.path.exists(os.path.join(save_dir, "last.pth"))
+    csv_path = os.path.join(save_dir, "metrics.csv")
+    assert os.path.exists(csv_path)
+    with open(csv_path) as fh:
+        rows = fh.readlines()
+    assert len(rows) == 3, f"expected header + 2 rows, got {len(rows)}"
+
+    # --- verify resume from epoch_000 round-trips state ---
+    resume_model = build_model(model_cfg).to(device)
+    resume_trainer = Trainer(resume_model, loss_fn, train_loader, val_loader,
+                              trainer_cfg, device, evaluate_fn=eval_fn,
+                              amp=device.type == "cuda")
+    resume_trainer.load_checkpoint(os.path.join(save_dir, "epoch_001.pth"))
+    assert resume_trainer.state.epoch == 1, resume_trainer.state.epoch
+    logger.info("checkpoint + resume verified")
 
 
 def main():

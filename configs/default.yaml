@@ -61,6 +61,8 @@ trainer:
   save_dir: outputs/run
   eval_every: 1
   amp: true
+  save_every_epoch: true        # also write outputs/run/epoch_NNN.pth each epoch
+  metrics_csv: metrics.csv      # appended every epoch under save_dir, set to "" to disable
 
 loss:
   # binary

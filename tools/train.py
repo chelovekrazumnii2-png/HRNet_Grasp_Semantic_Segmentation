@@ -97,6 +97,11 @@ def _input_channels(input_mode: str) -> int:
 def main():
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("--config", required=True)
+    parser.add_argument("--resume", default=None,
+                        help="Path to a checkpoint (e.g. last.pth) to resume from.")
+    parser.add_argument("--resume-model-only", action="store_true",
+                        help="With --resume, load only model weights and start a fresh "
+                             "optimizer/scheduler/state (use for fine-tuning).")
     overrides, argv_rest = _parse_cli_overrides(sys.argv[1:])
     args = parser.parse_args(argv_rest)
 
@@ -188,6 +193,8 @@ def main():
         save_dir=cfg["trainer"]["save_dir"],
         eval_every=cfg["trainer"]["eval_every"],
         target_metric="miou_fg",
+        save_every_epoch=cfg["trainer"].get("save_every_epoch", True),
+        metrics_csv=cfg["trainer"].get("metrics_csv", "metrics.csv"),
     )
     os.makedirs(trainer_cfg.save_dir, exist_ok=True)
     with open(os.path.join(trainer_cfg.save_dir, "resolved_config.yaml"), "w") as f:
@@ -203,6 +210,8 @@ def main():
         evaluate_fn=eval_fn,
         amp=cfg["trainer"]["amp"],
     )
+    if args.resume:
+        trainer.load_checkpoint(args.resume, load_optim=not args.resume_model_only)
     state = trainer.fit()
     logger.info(f"Done. Best {trainer_cfg.target_metric}={state.best_metric:.4f} "
                 f"at epoch {state.best_epoch}")
