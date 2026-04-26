@@ -87,7 +87,9 @@ DataSphere **не монтирует Я.Диск напрямую** (это дв
        print("extracting", os.path.basename(z))
        with zipfile.ZipFile(z) as zf:
            zf.extractall(DATA_DIR)
-   for shard in sorted(glob.glob(os.path.join(DATA_DIR, "JacquardV2_Dataset_*"))):
+   shards = (sorted(glob.glob(os.path.join(DATA_DIR, "JacquardV2_Dataset_*")))
+             + sorted(glob.glob(os.path.join(DATA_DIR, "Jacquard_Dataset_*"))))
+   for shard in shards:
        for entry in os.listdir(shard):
            dst = os.path.join(DATA_DIR, entry)
            if not os.path.exists(dst):
