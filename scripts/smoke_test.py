@@ -12,6 +12,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import csv
 import os
 import shutil
 import tempfile
@@ -109,15 +110,57 @@ def _run_one_mode(mask_mode: str, root: str, splits_path: str, device: torch.dev
         loss_fn = MultiTaskGraspLoss(bce_pos_weight=5.0)
         eval_fn = evaluate_multitask
 
+    save_dir = os.path.join(root, f"out_{mask_mode}")
     trainer_cfg = TrainerConfig(
-        epochs=1, accum_steps=1, lr=1e-3, optimizer="adamw",
+        epochs=2, accum_steps=1, lr=1e-3, optimizer="adamw",
         scheduler="poly", warmup_epochs=0.0, log_interval=1,
-        save_dir=os.path.join(root, f"out_{mask_mode}"), eval_every=1,
+        save_dir=save_dir, eval_every=1,
+        save_every_epoch=True, metrics_csv="metrics.csv",
     )
     trainer = Trainer(model, loss_fn, train_loader, val_loader, trainer_cfg,
                       device, evaluate_fn=eval_fn, amp=device.type == "cuda")
     trainer.fit()
     logger.info(f"done, best metric={trainer.state.best_metric:.4f}")
+
+    # --- verify checkpoint side-effects ---
+    assert os.path.exists(os.path.join(save_dir, "epoch_000.pth"))
+    assert os.path.exists(os.path.join(save_dir, "epoch_001.pth"))
+    assert os.path.exists(os.path.join(save_dir, "last.pth"))
+    csv_path = os.path.join(save_dir, "metrics.csv")
+    assert os.path.exists(csv_path)
+    with open(csv_path) as fh:
+        rows = fh.readlines()
+    assert len(rows) == 3, f"expected header + 2 rows, got {len(rows)}"
+
+    # --- verify resume from epoch_001 round-trips state ---
+    resume_model = build_model(model_cfg).to(device)
+    resume_trainer = Trainer(resume_model, loss_fn, train_loader, val_loader,
+                              trainer_cfg, device, evaluate_fn=eval_fn,
+                              amp=device.type == "cuda")
+    resume_trainer.load_checkpoint(os.path.join(save_dir, "epoch_001.pth"))
+    assert resume_trainer.state.epoch == 1, resume_trainer.state.epoch
+
+    # --- verify resume continues at epoch+1, not the same epoch ---
+    extended_cfg = TrainerConfig(
+        epochs=4, accum_steps=1, lr=1e-3, optimizer="adamw",
+        scheduler="poly", warmup_epochs=0.0, log_interval=1,
+        save_dir=save_dir, eval_every=1,
+        save_every_epoch=True, metrics_csv="metrics.csv",
+    )
+    extended_model = build_model(model_cfg).to(device)
+    extended = Trainer(extended_model, loss_fn, train_loader, val_loader,
+                       extended_cfg, device, evaluate_fn=eval_fn,
+                       amp=device.type == "cuda")
+    extended.load_checkpoint(os.path.join(save_dir, "epoch_001.pth"))
+    extended.fit()
+    # epochs 0,1 already done -> 2,3 should be the new ones
+    assert os.path.exists(os.path.join(save_dir, "epoch_002.pth"))
+    assert os.path.exists(os.path.join(save_dir, "epoch_003.pth"))
+    with open(csv_path) as fh:
+        rows = list(csv.DictReader(fh))
+    epochs_seen = sorted(int(r["epoch"]) for r in rows)
+    assert epochs_seen == [0, 1, 2, 3], epochs_seen
+    logger.info("checkpoint + resume verified")
 
 
 def main():

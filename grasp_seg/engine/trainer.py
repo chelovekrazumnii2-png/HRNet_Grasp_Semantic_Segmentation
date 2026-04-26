@@ -1,6 +1,7 @@
 """Training engine with AMP + gradient accumulation."""
 from __future__ import annotations
 
+import csv
 import math
 import os
 from dataclasses import dataclass, field
@@ -39,6 +40,8 @@ class TrainerConfig:
     save_dir: str = "outputs/run"
     eval_every: int = 1
     target_metric: str = "miou_fg"  # which metric guides best-checkpointing
+    save_every_epoch: bool = True   # also write epoch_NNN.pth alongside last/best
+    metrics_csv: str = "metrics.csv"  # appended every epoch under save_dir
 
 
 def _build_optimizer(model: nn.Module, cfg: TrainerConfig) -> torch.optim.Optimizer:
@@ -110,6 +113,43 @@ class Trainer:
         self.state = TrainState()
         self.logger = get_logger("trainer")
         os.makedirs(cfg.save_dir, exist_ok=True)
+        self._csv_path = os.path.join(cfg.save_dir, cfg.metrics_csv) if cfg.metrics_csv else None
+        self._csv_keys: list[str] = []  # columns lazily expand as new metrics show up
+        self._csv_rows: list[dict] = []  # all rows in memory; rewritten each append
+        if self._csv_path and os.path.exists(self._csv_path):
+            # carry forward existing rows so a resumed run keeps the same file
+            # and a column-set expansion (e.g. first eval epoch under
+            # eval_every>1) can rewrite the header cleanly.
+            with open(self._csv_path, newline="") as fh:
+                reader = csv.DictReader(fh)
+                for r in reader:
+                    for k in r:
+                        if k not in self._csv_keys:
+                            self._csv_keys.append(k)
+                    self._csv_rows.append(r)
+
+    # ------------------------------------------------------------------
+    def load_checkpoint(self, path: str, *, load_optim: bool = True) -> None:
+        """Restore model + (optionally) optimizer / scheduler / scaler / state.
+
+        ``load_optim=False`` is useful for fine-tuning from a checkpoint while
+        starting a fresh optimizer schedule.
+        """
+        ckpt = torch.load(path, map_location=self.device)
+        self.model.load_state_dict(ckpt["model"])
+        if load_optim:
+            if "optimizer" in ckpt:
+                self.optimizer.load_state_dict(ckpt["optimizer"])
+            if "scheduler" in ckpt:
+                self.scheduler.load_state_dict(ckpt["scheduler"])
+            if "scaler" in ckpt:
+                self.scaler.load_state_dict(ckpt["scaler"])
+            if "state" in ckpt:
+                for k, v in ckpt["state"].items():
+                    if hasattr(self.state, k):
+                        setattr(self.state, k, v)
+        self.logger.info(f"loaded checkpoint from {path} (resume_epoch={self.state.epoch + 1}, "
+                         f"global_step={self.state.global_step})")
 
     # ------------------------------------------------------------------
     def train_one_epoch(self) -> dict:
@@ -154,12 +194,19 @@ class Trainer:
 
     # ------------------------------------------------------------------
     def fit(self) -> TrainState:
-        for epoch in range(self.cfg.epochs):
+        # On resume, ``self.state.epoch`` is the index of the *last completed*
+        # epoch (it was saved after that epoch's epoch_NNN.pth was written), so
+        # training has to continue from epoch+1. Without the +1 we would re-run
+        # the already-completed epoch and advance global_step / scheduler past
+        # their checkpointed values.
+        start_epoch = self.state.epoch + 1 if self.state.global_step > 0 else 0
+        for epoch in range(start_epoch, self.cfg.epochs):
             self.state.epoch = epoch
             train_metrics = self.train_one_epoch()
             self.logger.info(f"[epoch {epoch}] train: " +
                              " ".join(f"{k}={v:.4f}" for k, v in train_metrics.items()))
 
+            val_metrics: dict = {}
             if self.evaluate_fn is not None and self.val_loader is not None \
                     and (epoch + 1) % self.cfg.eval_every == 0:
                 val_metrics = self.evaluate_fn(self.model, self.val_loader, self.device, self.amp)
@@ -171,8 +218,33 @@ class Trainer:
                     self.state.best_epoch = epoch
                     self.save_checkpoint("best.pth", val_metrics)
 
-            self.save_checkpoint("last.pth", {})
+            self.save_checkpoint("last.pth", val_metrics)
+            if self.cfg.save_every_epoch:
+                self.save_checkpoint(f"epoch_{epoch:03d}.pth", val_metrics)
+            self._append_metrics_row(epoch, train_metrics, val_metrics)
         return self.state
+
+    # ------------------------------------------------------------------
+    def _append_metrics_row(self, epoch: int, train_metrics: dict, val_metrics: dict) -> None:
+        if not self._csv_path:
+            return
+        row: dict = {"epoch": epoch, "global_step": self.state.global_step,
+                     "lr": self.optimizer.param_groups[0]["lr"]}
+        row.update({f"train_{k}": float(v) for k, v in train_metrics.items()})
+        row.update({f"val_{k}": float(v) for k, v in val_metrics.items()})
+        # expand the column set if a new metric appeared this epoch (e.g.
+        # eval_every>1 means val_* columns first show up several epochs in)
+        for k in row:
+            if k not in self._csv_keys:
+                self._csv_keys.append(k)
+        self._csv_rows.append(row)
+        # Rewrite the whole CSV (≤ epochs rows, trivial overhead) so the
+        # header always reflects the current column set even after expansion.
+        with open(self._csv_path, "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=self._csv_keys, extrasaction="ignore")
+            w.writeheader()
+            for r in self._csv_rows:
+                w.writerow(r)
 
     # ------------------------------------------------------------------
     def save_checkpoint(self, name: str, extra: dict) -> None:
