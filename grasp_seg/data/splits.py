@@ -17,14 +17,18 @@ from typing import Dict, List, Tuple
 def discover_dataset(root: str) -> Dict[str, List[str]]:
     """Walk a dataset root and return ``{object_id: [grasp_file, ...]}``.
 
-    The directory layout produced by extracting the four Jacquard V2
-    archives is::
+    The directory layout produced by extracting the Jacquard V2 archives is::
 
-        root/JacquardV2_Dataset_{0,1,2,3}/<object_id>/<idx>_<object_id>_grasps.txt
+        root/JacquardV2_Dataset_{0..3}/<object_id>/<idx>_<object_id>_grasps.txt
+        root/Jacquard_Dataset_{0..11}/<object_id>/<idx>_<object_id>_grasps.txt
+
+    (The upstream release uses ``JacquardV2_Dataset_N``; some community
+    mirrors — including the Yandex Disk share we reference in the Colab
+    notebook — use the shorter ``Jacquard_Dataset_N`` with more shards.)
 
     We support a flatter layout too (objects directly under ``root``).
     """
-    pattern_a = os.path.join(root, "JacquardV2_Dataset_*", "*", "*_grasps.txt")
+    pattern_a = os.path.join(root, "Jacquard*Dataset_*", "*", "*_grasps.txt")
     pattern_b = os.path.join(root, "*", "*_grasps.txt")
     files = sorted(glob.glob(pattern_a)) or sorted(glob.glob(pattern_b))
     if not files:
