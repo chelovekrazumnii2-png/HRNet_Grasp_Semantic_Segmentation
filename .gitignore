@@ -222,3 +222,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Pipeline outputs and checkpoints
+outputs/
+runs/
+checkpoints/
+*.pth
+*.pt
+*.ckpt
+*.npz
+*.tfevents.*
+splits/*.json
