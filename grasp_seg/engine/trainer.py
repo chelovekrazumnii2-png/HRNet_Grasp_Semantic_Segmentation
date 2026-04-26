@@ -136,7 +136,15 @@ class Trainer:
         starting a fresh optimizer schedule.
         """
         ckpt = torch.load(path, map_location=self.device)
-        self.model.load_state_dict(ckpt["model"])
+        # Checkpoints are always saved from the underlying (unwrapped) module
+        # so they are portable between single-GPU and DataParallel runs.
+        state = ckpt["model"]
+        target = self.model.module if isinstance(self.model, nn.DataParallel) else self.model
+        # Back-compat: older checkpoints saved from a DataParallel-wrapped
+        # model carried a 'module.' prefix on every key; strip it if present.
+        if any(k.startswith("module.") for k in state):
+            state = {k[len("module."):] if k.startswith("module.") else k: v for k, v in state.items()}
+        target.load_state_dict(state)
         if load_optim:
             if "optimizer" in ckpt:
                 self.optimizer.load_state_dict(ckpt["optimizer"])
@@ -249,8 +257,11 @@ class Trainer:
     # ------------------------------------------------------------------
     def save_checkpoint(self, name: str, extra: dict) -> None:
         path = os.path.join(self.cfg.save_dir, name)
+        # Save the unwrapped module state_dict so checkpoints round-trip
+        # between single-GPU and DataParallel sessions.
+        target = self.model.module if isinstance(self.model, nn.DataParallel) else self.model
         torch.save({
-            "model": self.model.state_dict(),
+            "model": target.state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "scheduler": self.scheduler.state_dict(),
             "scaler": self.scaler.state_dict(),

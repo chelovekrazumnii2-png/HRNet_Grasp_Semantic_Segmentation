@@ -31,6 +31,7 @@ if _REPO_ROOT not in sys.path:
 
 import numpy as np
 import torch
+import torch.nn as nn
 import yaml
 from torch.utils.data import DataLoader
 
@@ -152,6 +153,13 @@ def main():
         "num_angle_bins": ds_cfg.num_angle_bins,
     }
     model = build_model(model_cfg)
+
+    # Auto-enable DataParallel when the host exposes >1 visible CUDA device
+    # (e.g. Kaggle's T4 x2 accelerator). Set CUDA_VISIBLE_DEVICES=0 in the
+    # environment to force single-GPU training.
+    if device.type == "cuda" and torch.cuda.device_count() > 1:
+        logger.info(f"wrapping model in DataParallel across {torch.cuda.device_count()} GPUs")
+        model = nn.DataParallel(model)
 
     if ds_cfg.mask_mode == "binary":
         loss_fn = BinaryDiceBCELoss(
