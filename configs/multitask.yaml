@@ -1,0 +1,98 @@
+# HRNet-W18 + Jacquard V2, GG-CNN-style multitask head.
+#
+# Outputs 4 dense maps instead of a 19-class mask:
+#   pos   — sigmoid(positivity); replaces the foreground mask.
+#   cos2t — cos(2θ) regression on positive pixels.
+#   sin2t — sin(2θ) regression on positive pixels.
+#   width — sigmoid(grasp opening / 150 px), regressed on positive pixels.
+#
+# Why a separate config:
+# - lets us launch Phase 2a (multitask experiment) without touching the
+#   already-running ``angle``-mode A100 run (configs/default.yaml).
+# - default.yaml's loss/save_dir/etc. are already compatible with the
+#   ``multitask`` branch in tools/train.py — the only required change is
+#   ``dataset.mask_mode`` and a non-overlapping ``trainer.save_dir``.
+#
+# Comparison to ``angle`` mode (configs/default.yaml):
+# - Loss is a weighted sum of: BCE+Dice on pos, MSE on cos2t/sin2t/width.
+# - Evaluator returns ConfusionMeter metrics on the binary pos map (i.e.
+#   miou_fg measures foreground-vs-background only, NOT angle correctness),
+#   plus per-pixel cos2t/sin2t MSE on positives. See docs/multitask_phase2.md
+#   for caveats around comparing miou_fg between the two runs.
+seed: 0
+
+dataset:
+  root: /path/to/JacquardV2_Dataset
+  splits_path: splits/jacquard_v2.json
+  image_size: 384
+  input_mode: rgbd
+  mask_mode: multitask                    # ← key difference vs default.yaml
+  num_angle_bins: 18                      # unused by multitask, kept for parity
+  length_scale: 0.3333
+  use_stereo_depth: false
+  num_workers: 2
+  pin_memory: true
+
+augmentation:
+  enable: true
+  hflip_p: 0.5
+  vflip_p: 0.5
+  rotate_p: 0.8
+  rotate_max_deg: 180.0
+  scale_p: 0.7
+  scale_range: [0.8, 1.2]
+  translate_p: 0.5
+  translate_max_frac: 0.05
+  color_jitter_p: 0.5
+  brightness: 0.2
+  contrast: 0.2
+  saturation: 0.2
+  hue: 0.05
+  rgb_noise_p: 0.3
+  rgb_noise_std: 0.02
+  depth_jitter_p: 0.5
+  depth_jitter_range: [0.95, 1.05]
+  depth_dropout_p: 0.3
+  depth_dropout_frac: 0.02
+  use_stereo_depth_p: 0.3
+
+model:
+  backbone: hrnet_w18
+  pretrained: true
+  head_channels: 256
+  dropout: 0.1
+
+trainer:
+  epochs: 80
+  batch_size: 2
+  accum_steps: 4                          # effective batch = 8 (override on Colab to 48 / 1)
+  lr: 0.01
+  weight_decay: 5.0e-4
+  momentum: 0.9
+  optimizer: sgd
+  scheduler: poly
+  poly_power: 0.9
+  warmup_epochs: 1.0
+  grad_clip: 1.0
+  log_interval: 20
+  save_dir: outputs/multitask             # ← isolate from outputs/run (angle mode)
+  eval_every: 1
+  amp: true
+  save_every_epoch: true
+  metrics_csv: metrics.csv
+
+loss:
+  # Used by both binary and angle modes; left here for compatibility with
+  # tools/train.py which reads them unconditionally.
+  bce_weight: 1.0
+  dice_weight: 1.0
+  bce_pos_weight: 5.0
+  ce_weight: 1.0
+  ignore_background_in_dice: true
+  # Multitask-specific weights (effective in this config).
+  # width_weight=0.1 keeps width MSE from dominating early in training; cos /
+  # sin / pos use weight=1.0 because they are all roughly comparable in scale.
+  pos_weight: 1.0
+  cos_weight: 1.0
+  sin_weight: 1.0
+  width_weight: 0.1
