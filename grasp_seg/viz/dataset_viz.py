@@ -349,15 +349,23 @@ def figure_augmentation_steps(
 
 
 def figure_cornell_raw(scene, max_grasps: int = 20):
-    """Cornell scene with positive grasps drawn at native resolution."""
+    """Cornell scene with positive grasps + depth (if available)."""
     overlay = draw.draw_grasp_list(scene.rgb, scene.pos_grasps, max_n=max_grasps,
                                    color=(0.1, 1.0, 0.2), thickness=2)
-    fig, ax = plt.subplots(1, 1, figsize=(7, 5.5))
-    ax.imshow(np.clip(overlay, 0, 1))
-    ax.set_title(
-        f"Cornell Grasp Dataset, сцена {scene.scene_id} "
-        f"({len(scene.pos_grasps)} позитивных GT-захватов)"
+    has_depth = scene.depth is not None
+    n_cols = 2 if has_depth else 1
+    fig, axes = plt.subplots(1, n_cols, figsize=(6.5 * n_cols, 5.0))
+    if not has_depth:
+        axes = [axes]
+    axes[0].imshow(np.clip(overlay, 0, 1))
+    axes[0].set_title(
+        f"RGB + GT-захваты\n(сцена {scene.scene_id}, "
+        f"{len(scene.pos_grasps)} позитивных)"
     )
-    ax.set_axis_off()
+    axes[0].set_axis_off()
+    if has_depth:
+        axes[1].imshow(scene.depth, cmap="viridis")
+        axes[1].set_title("Depth (нормированная, pcdNNNNd.tiff)")
+        axes[1].set_axis_off()
     fig.tight_layout()
     return fig
