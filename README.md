@@ -65,6 +65,49 @@ python scripts/smoke_test.py
 
 Должен пройти без ошибок и напечатать `ALL MODES OK`.
 
+### Windows + RTX 3060 — пошагово (PowerShell)
+
+Если запускаете с нуля под Windows для визуализации/инференса:
+
+```powershell
+# 1) клон + venv
+cd D:\
+git clone https://github.com/chelovekrazumnii2-png/HRNet_Grasp_Semantic_Segmentation.git
+cd HRNet_Grasp_Semantic_Segmentation
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+
+# 2) torch CUDA 12.6 (RTX 3060)
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+
+# 3) остальные зависимости + Jupyter kernel
+pip install -r requirements.txt
+pip install jupyter ipykernel
+python -m ipykernel install --user --name grasp_viz --display-name "Python 3.10 (HRNet viz)"
+
+# 4) smoke-тест
+python scripts\smoke_test.py
+```
+
+Раскладка ассетов, под которую заточены дефолты `notebooks\visualize.ipynb`
+для `ENV="local"`:
+
+```
+HRNet_Grasp_Semantic_Segmentation\
+  datasets\
+    JacquardV2\                       # распакованный Jacquard V2
+    Cornel_grasp_dataset\             # 10 подпапок 01..10 + backgrounds (игнорируется)
+  train_results\
+    splits\jacquard_v2.json           # сплиты, сгенерированные на обучении
+    hrnet_w18_rgb_multitask\          # best.pth, epoch_NNN.pth, metrics.csv, resolved_config.yaml
+    hrnet_w18_rgbd_multitask\
+    hrnet_w18_rgbd_angle\
+```
+
+Папки `datasets/` и `train_results/` **в git не коммитятся** (см.
+`.gitignore`) — складывайте туда любые объёмы.
+
 ## Подготовка датасета
 
 1. Скачать 4 архива Jacquard V2 (`JacquardV2_Dataset_0..3`) с
