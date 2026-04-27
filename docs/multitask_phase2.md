@@ -130,3 +130,38 @@ throughput without sync cost.
 
 No parallel notebook cells or terminal access required — the numbers are
 captured inline and survive in `metrics.csv` for post-hoc analysis.
+
+## GPU memory + utilization (built-in)
+
+Alongside the timing profiler the trainer also samples GPU memory and
+utilization once per step and emits a per-epoch summary line plus three new
+columns in `metrics.csv`:
+
+- `train_gpu_mem_alloc_gb` — average live tensor footprint per step (GB).
+  Useful to see how close we are to OOM with the chosen `batch_size`.
+- `train_gpu_mem_peak_gb` — running peak across the whole epoch
+  (`torch.cuda.max_memory_allocated`, reset at epoch start).
+- `train_gpu_util_pct` — `nvmlDeviceGetUtilizationRates(...).gpu` —
+  this is the same number `nvidia-smi` reports as `Volatile GPU-Util`.
+  Only present when `pynvml` imports successfully (it is bundled with the
+  cuda PyTorch wheels). When unavailable the column is silently dropped
+  and the log line shows `util=N/A`.
+
+Per-epoch log line:
+
+```
+[epoch 3] gpu: util=87% mem_alloc=14.32GB mem_peak=15.10GB
+```
+
+Heuristics:
+
+| metric | what to look for |
+| ------ | ---------------- |
+| `gpu_util_pct < 60%` | GPU starved — confirm with `dataload_fraction`; if it's high you are CPU/IO-bound, otherwise your batch / model is too small to saturate. |
+| `gpu_mem_peak_gb / total` close to 1.0 | OOM risk — drop `batch_size` or enable `accum_steps`. |
+| `gpu_mem_peak_gb` ≪ available | Headroom for a larger `batch_size` (often the cheapest throughput win). |
+
+Turn it off with `trainer.profile_gpu=false`. Memory reads are free
+(counter dereferences in the CUDA caching allocator); util% calls into
+NVML once per step (~10 µs). No measurable overhead at our step times
+(>500 ms on A100).

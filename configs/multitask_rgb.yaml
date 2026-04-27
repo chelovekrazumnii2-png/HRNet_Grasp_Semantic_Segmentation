@@ -71,6 +71,7 @@ trainer:
   save_every_epoch: true
   metrics_csv: metrics.csv
   profile_timing: true                    # per-epoch data/compute timing + dataload_fraction in logs and metrics.csv
+  profile_gpu: true                       # per-epoch GPU memory (allocated/peak GB) and utilization%
 
 loss:
   bce_weight: 1.0

@@ -44,6 +44,7 @@ class TrainerConfig:
     save_every_epoch: bool = True   # also write epoch_NNN.pth alongside last/best
     metrics_csv: str = "metrics.csv"  # appended every epoch under save_dir
     profile_timing: bool = True     # measure data/forward/backward wall time (tiny overhead: one torch.cuda.synchronize per step)
+    profile_gpu: bool = True        # log per-epoch GPU memory (allocated/peak) and utilization%
 
 
 def _build_optimizer(model: nn.Module, cfg: TrainerConfig) -> torch.optim.Optimizer:
@@ -130,6 +131,29 @@ class Trainer:
                             self._csv_keys.append(k)
                     self._csv_rows.append(r)
 
+        # Lazy pynvml import for GPU utilization%. Memory metrics work via
+        # torch.cuda alone; util% requires NVML which torch already vendors
+        # for newer wheels but is not always exposed. If unavailable we just
+        # skip the util column — memory stats still appear.
+        self._nvml_handle = None
+        if self.device.type == "cuda" and bool(getattr(cfg, "profile_gpu", True)):
+            try:
+                import pynvml  # type: ignore
+                pynvml.nvmlInit()
+                idx = self.device.index if self.device.index is not None else 0
+                self._nvml_handle = pynvml.nvmlDeviceGetHandleByIndex(idx)
+                self._pynvml = pynvml
+            except Exception as e:
+                self.logger.info(f"pynvml unavailable ({type(e).__name__}); GPU util% will not be logged")
+                self._pynvml = None
+
+    def _nvml_utilization(self, handle) -> Optional[float]:
+        """Return GPU utilization percent (0-100), or None if NVML failed."""
+        try:
+            return self._pynvml.nvmlDeviceGetUtilizationRates(handle).gpu
+        except Exception:
+            return None
+
     # ------------------------------------------------------------------
     def load_checkpoint(self, path: str, *, load_optim: bool = True) -> None:
         """Restore model + (optionally) optimizer / scheduler / scaler / state.
@@ -167,6 +191,15 @@ class Trainer:
         meters = MeterDict()
         self.optimizer.zero_grad(set_to_none=True)
         accum = max(self.cfg.accum_steps, 1)
+
+        # GPU memory / utilization tracking. Memory is read directly from
+        # torch.cuda; utilization% comes from pynvml if available (it is the
+        # same number nvidia-smi reports). Both are sampled at end of each
+        # step so we can average / take the peak across the epoch.
+        profile_gpu = bool(getattr(self.cfg, "profile_gpu", True)) and self.device.type == "cuda"
+        if profile_gpu:
+            torch.cuda.reset_peak_memory_stats(self.device)
+        nvml_handle = self._nvml_handle if profile_gpu else None
 
         # Timing instrumentation. ``data_time`` is measured as wall time from
         # just after the previous step finishes (post-synchronize) to the
@@ -220,12 +253,23 @@ class Trainer:
             step_time = t_step_end - t_prev
             # Per-sample averaging over the effective batch so numbers stay
             # comparable across different batch / accum_steps settings.
-            meters.update({
+            timing = {
                 "data_time_s": data_time,
                 "compute_time_s": compute_time,
                 "step_time_s": step_time,
                 "dataload_fraction": data_time / max(step_time, 1e-9),
-            }, n=x.size(0))
+            }
+            if profile_gpu:
+                # bytes -> GB. memory_allocated is the live tensor footprint
+                # at this moment; max_memory_allocated is the running peak
+                # since reset_peak_memory_stats was called at epoch start.
+                timing["gpu_mem_alloc_gb"] = torch.cuda.memory_allocated(self.device) / (1024 ** 3)
+                timing["gpu_mem_peak_gb"] = torch.cuda.max_memory_allocated(self.device) / (1024 ** 3)
+                if nvml_handle is not None:
+                    util = self._nvml_utilization(nvml_handle)
+                    if util is not None:
+                        timing["gpu_util_pct"] = float(util)
+            meters.update(timing, n=x.size(0))
 
         # Final partial accumulation flush
         # (drop the partial gradients to keep step boundaries clean)
@@ -257,6 +301,17 @@ class Trainer:
                     f"(data={train_metrics['data_time_s']*1000:.1f}ms, "
                     f"compute={train_metrics['compute_time_s']*1000:.1f}ms, "
                     f"dataload_frac={frac:.2f}) -> {verdict}"
+                )
+            # Per-epoch GPU memory + utilization summary line. Memory is in GB
+            # (allocated avg across steps + peak); utilization is the average
+            # nvidia-smi % over the epoch when pynvml is available.
+            if "gpu_mem_alloc_gb" in train_metrics:
+                util_str = (f" util={train_metrics['gpu_util_pct']:.0f}%"
+                            if "gpu_util_pct" in train_metrics else " util=N/A")
+                self.logger.info(
+                    f"[epoch {epoch}] gpu:{util_str} "
+                    f"mem_alloc={train_metrics['gpu_mem_alloc_gb']:.2f}GB "
+                    f"mem_peak={train_metrics['gpu_mem_peak_gb']:.2f}GB"
                 )
 
             val_metrics: dict = {}

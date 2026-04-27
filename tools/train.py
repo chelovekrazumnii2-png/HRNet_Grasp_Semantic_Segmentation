@@ -218,6 +218,7 @@ def main():
         save_every_epoch=cfg["trainer"].get("save_every_epoch", True),
         metrics_csv=cfg["trainer"].get("metrics_csv", "metrics.csv"),
         profile_timing=cfg["trainer"].get("profile_timing", True),
+        profile_gpu=cfg["trainer"].get("profile_gpu", True),
     )
     os.makedirs(trainer_cfg.save_dir, exist_ok=True)
     with open(os.path.join(trainer_cfg.save_dir, "resolved_config.yaml"), "w") as f:
