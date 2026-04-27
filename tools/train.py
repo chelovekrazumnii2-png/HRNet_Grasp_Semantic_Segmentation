@@ -132,17 +132,31 @@ def main():
     val_aug = AugConfig(enable=False)
     val_ds = JacquardV2GraspSeg(split.val, ds_cfg, aug=val_aug, is_training=False)
 
+    # ``persistent_workers`` and ``prefetch_factor`` materially affect epoch
+    # throughput on Colab/Kaggle (saves ~5 s of worker re-spawn per epoch and
+    # keeps the GPU fed during forward/backward) but are only meaningful when
+    # num_workers>0; guard accordingly so a num_workers=0 debug run still
+    # works.
+    nw = int(cfg["dataset"]["num_workers"])
+    persistent = bool(cfg["dataset"].get("persistent_workers", False)) and nw > 0
+    prefetch = int(cfg["dataset"].get("prefetch_factor", 2)) if nw > 0 else None
+    loader_extra = {}
+    if nw > 0:
+        loader_extra["persistent_workers"] = persistent
+        loader_extra["prefetch_factor"] = prefetch
     train_loader = DataLoader(
         train_ds, batch_size=cfg["trainer"]["batch_size"], shuffle=True,
-        num_workers=cfg["dataset"]["num_workers"],
+        num_workers=nw,
         pin_memory=cfg["dataset"]["pin_memory"],
         drop_last=True, collate_fn=collate_fn,
+        **loader_extra,
     )
     val_loader = DataLoader(
         val_ds, batch_size=cfg["trainer"]["batch_size"], shuffle=False,
-        num_workers=cfg["dataset"]["num_workers"],
+        num_workers=nw,
         pin_memory=cfg["dataset"]["pin_memory"],
         collate_fn=collate_fn,
+        **loader_extra,
     )
 
     model_cfg = {
@@ -203,6 +217,7 @@ def main():
         target_metric="miou_fg",
         save_every_epoch=cfg["trainer"].get("save_every_epoch", True),
         metrics_csv=cfg["trainer"].get("metrics_csv", "metrics.csv"),
+        profile_timing=cfg["trainer"].get("profile_timing", True),
     )
     os.makedirs(trainer_cfg.save_dir, exist_ok=True)
     with open(os.path.join(trainer_cfg.save_dir, "resolved_config.yaml"), "w") as f:

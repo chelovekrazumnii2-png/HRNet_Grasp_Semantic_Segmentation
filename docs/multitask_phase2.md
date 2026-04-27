@@ -101,3 +101,32 @@ python scripts/smoke_test.py
 
 A clean run prints `ALL MODES OK` after exercising each mode for two epochs
 with checkpoint + resume.
+
+## Timing / bottleneck diagnostics (built-in)
+
+Every epoch logs a one-line timing summary, and four new columns land in
+`metrics.csv`:
+
+- `train_data_time_s` — wall-clock per step waiting on the DataLoader.
+- `train_compute_time_s` — forward + backward + optimizer step.
+- `train_step_time_s` — full step (≈ sum of the two above).
+- `train_dataload_fraction` — `data_time / step_time`. **Our rule of thumb:**
+
+  | fraction | verdict                                              |
+  | -------- | ---------------------------------------------------- |
+  | `< 0.10` | GPU-bound — DataLoader is not a bottleneck.          |
+  | `0.10–0.30` | balanced — slight headroom, usually fine.         |
+  | `> 0.30` | **DataLoader-bound** — raise `num_workers` or `prefetch_factor`, enable `persistent_workers`, or check disk IO. |
+
+Per-epoch log line looks like:
+
+```
+[epoch 3] timing: step=612.4ms (data=58.1ms, compute=554.3ms, dataload_frac=0.09) -> GPU-bound (good)
+```
+
+Overhead: one `torch.cuda.synchronize()` per optimizer step (~1 ms on A100). Turn
+it off with `trainer.profile_timing=false` if you want to benchmark raw
+throughput without sync cost.
+
+No parallel notebook cells or terminal access required — the numbers are
+captured inline and survive in `metrics.csv` for post-hoc analysis.

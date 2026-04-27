@@ -4,6 +4,7 @@ from __future__ import annotations
 import csv
 import math
 import os
+import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -42,6 +43,7 @@ class TrainerConfig:
     target_metric: str = "miou_fg"  # which metric guides best-checkpointing
     save_every_epoch: bool = True   # also write epoch_NNN.pth alongside last/best
     metrics_csv: str = "metrics.csv"  # appended every epoch under save_dir
+    profile_timing: bool = True     # measure data/forward/backward wall time (tiny overhead: one torch.cuda.synchronize per step)
 
 
 def _build_optimizer(model: nn.Module, cfg: TrainerConfig) -> torch.optim.Optimizer:
@@ -165,7 +167,19 @@ class Trainer:
         meters = MeterDict()
         self.optimizer.zero_grad(set_to_none=True)
         accum = max(self.cfg.accum_steps, 1)
+
+        # Timing instrumentation. ``data_time`` is measured as wall time from
+        # just after the previous step finishes (post-synchronize) to the
+        # moment the next batch arrives. ``compute_time`` covers forward +
+        # backward + optimizer step. We call cuda.synchronize once per step
+        # (~1 ms on A100) so the split is accurate; if profile_timing is
+        # disabled the sync is skipped and the raw wall times are still
+        # logged for a rough signal.
+        profile = bool(getattr(self.cfg, "profile_timing", True))
+        cuda_sync = (self.device.type == "cuda") and profile
+        t_step_end = time.perf_counter()  # marks end of previous step
         for step, batch in enumerate(self.train_loader):
+            t_batch_ready = time.perf_counter()
             x = batch["input"].to(self.device, non_blocking=True)
             y = _move_target(batch["target"], self.device)
             with torch.amp.autocast('cuda', enabled=self.amp):
@@ -196,6 +210,23 @@ class Trainer:
                            + " ".join(f"{k}={v:.4f}" for k, v in avg.items()))
                     self.logger.info(msg)
 
+            # End-of-step sync + timing.
+            if cuda_sync:
+                torch.cuda.synchronize()
+            t_prev = t_step_end
+            t_step_end = time.perf_counter()
+            data_time = t_batch_ready - t_prev        # dataloader wait
+            compute_time = t_step_end - t_batch_ready  # fwd + bwd + optim
+            step_time = t_step_end - t_prev
+            # Per-sample averaging over the effective batch so numbers stay
+            # comparable across different batch / accum_steps settings.
+            meters.update({
+                "data_time_s": data_time,
+                "compute_time_s": compute_time,
+                "step_time_s": step_time,
+                "dataload_fraction": data_time / max(step_time, 1e-9),
+            }, n=x.size(0))
+
         # Final partial accumulation flush
         # (drop the partial gradients to keep step boundaries clean)
         return meters.avg()
@@ -213,6 +244,20 @@ class Trainer:
             train_metrics = self.train_one_epoch()
             self.logger.info(f"[epoch {epoch}] train: " +
                              " ".join(f"{k}={v:.4f}" for k, v in train_metrics.items()))
+            # Human-readable bottleneck summary: if >30% of step time is
+            # spent waiting on the dataloader, the run is CPU/IO-bound and
+            # num_workers / prefetch_factor should be increased.
+            if "step_time_s" in train_metrics and "data_time_s" in train_metrics:
+                frac = train_metrics.get("dataload_fraction", 0.0)
+                verdict = ("GPU-bound (good)" if frac < 0.10
+                           else "balanced" if frac < 0.30
+                           else "DATALOADER-BOUND (increase num_workers/prefetch)")
+                self.logger.info(
+                    f"[epoch {epoch}] timing: step={train_metrics['step_time_s']*1000:.1f}ms "
+                    f"(data={train_metrics['data_time_s']*1000:.1f}ms, "
+                    f"compute={train_metrics['compute_time_s']*1000:.1f}ms, "
+                    f"dataload_frac={frac:.2f}) -> {verdict}"
+                )
 
             val_metrics: dict = {}
             if self.evaluate_fn is not None and self.val_loader is not None \

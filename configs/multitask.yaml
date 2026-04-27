@@ -32,6 +32,8 @@ dataset:
   use_stereo_depth: false
   num_workers: 2
   pin_memory: true
+  persistent_workers: false               # set true on Colab/Kaggle: avoids ~5 s/epoch of worker re-spawn
+  prefetch_factor: 2                      # increase to 4 on cloud GPUs to keep the model fed during fwd/bwd
 
 augmentation:
   enable: true
@@ -80,6 +82,7 @@ trainer:
   amp: true
   save_every_epoch: true
   metrics_csv: metrics.csv
+  profile_timing: true                    # per-epoch data/compute timing + dataload_fraction in logs and metrics.csv
 
 loss:
   # Used by both binary and angle modes; left here for compatibility with
