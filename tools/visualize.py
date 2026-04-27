@@ -250,10 +250,12 @@ def main() -> None:
             fig = compare_viz.figure_compare_models_jacquard(runners, scenes)
             _save(fig, os.path.join(out, "jacquard_test.png"), args.dpi)
         if args.cornell_root:
-            ids = cornell_data.list_scenes(args.cornell_root)
+            cornell_index = cornell_data.index_scenes(args.cornell_root)
+            ids = sorted(cornell_index)
             if ids:
                 ids = rng.sample(ids, min(args.num_cornell_scenes, len(ids)))
-                cs = [cornell_data.load_scene(args.cornell_root, i) for i in ids]
+                cs = [cornell_data.load_scene(args.cornell_root, i, index=cornell_index)
+                      for i in ids]
                 fig = compare_viz.figure_compare_models_cornell(runners, cs)
                 _save(fig, os.path.join(out, "cornell_test.png"), args.dpi)
 

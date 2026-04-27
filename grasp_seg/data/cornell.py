@@ -136,26 +136,30 @@ def _index_scenes(root: str) -> Dict[str, str]:
     return index
 
 
-def list_scenes(root: str) -> List[str]:
+def index_scenes(root: str) -> Dict[str, str]:
+    """Public alias of :func:`_index_scenes`: ``scene_id → RGB path``.
+
+    Useful for callers that want to load many scenes — build the index
+    once and pass it to :func:`load_scene` to avoid re-walking the tree.
+    """
+    return _index_scenes(root)
+
+
+def list_scenes(root: str, *, index: Optional[Dict[str, str]] = None) -> List[str]:
     """Return a sorted list of scene IDs (e.g. ``["0100", "0101", ...]``).
 
     Works for both the flat layout and the original 10-sub-directory
     Cornell layout (``01/`` … ``10/`` — ``backgrounds/`` is ignored).
+    Pass a pre-built ``index`` (from :func:`index_scenes`) to avoid the
+    ``os.walk`` if you already have one.
     """
-    return sorted(_index_scenes(root).keys())
+    if index is None:
+        index = _index_scenes(root)
+    return sorted(index.keys())
 
 
-def load_scene(root: str, scene_id: str) -> CornellSample:
-    """Load a single Cornell scene by its 4-digit ID."""
-    index = _index_scenes(root)
-    rgb_path = index.get(scene_id)
-    if rgb_path is None:
-        # Fallback: maybe the user passed the scene's own directory.
-        rgb_path = os.path.join(root, f"pcd{scene_id}r.png")
-        if not os.path.isfile(rgb_path):
-            raise FileNotFoundError(
-                f"Cornell scene pcd{scene_id}r.png not found under {root}"
-            )
+def _load_scene_from_path(scene_id: str, rgb_path: str) -> CornellSample:
+    """Internal worker: read RGB + cpos/cneg from a resolved RGB path."""
     img = cv2.imread(rgb_path, cv2.IMREAD_COLOR)
     if img is None:
         raise FileNotFoundError(rgb_path)
@@ -175,18 +179,47 @@ def load_scene(root: str, scene_id: str) -> CornellSample:
     )
 
 
+def load_scene(
+    root: str,
+    scene_id: str,
+    *,
+    index: Optional[Dict[str, str]] = None,
+) -> CornellSample:
+    """Load a single Cornell scene by its 4-digit ID.
+
+    Pass a pre-built ``index`` to skip the recursive ``os.walk``. When
+    iterating over many scenes, build the index once and reuse it across
+    calls (or use :func:`iter_scenes`, which already does this).
+    """
+    if index is not None:
+        rgb_path = index.get(scene_id)
+    else:
+        # Fast path for a single call: try the flat layout first; only
+        # walk the tree if the file isn't right at ``root``.
+        flat = os.path.join(root, f"pcd{scene_id}r.png")
+        rgb_path = flat if os.path.isfile(flat) else _index_scenes(root).get(scene_id)
+    if rgb_path is None:
+        raise FileNotFoundError(
+            f"Cornell scene pcd{scene_id}r.png not found under {root}"
+        )
+    return _load_scene_from_path(scene_id, rgb_path)
+
+
 def iter_scenes(root: str, scene_ids: Optional[List[str]] = None):
     """Iterate ``CornellSample`` instances over the dataset.
 
-    Builds the recursive index once and reuses it across scenes.
+    Builds the recursive index once and reuses it across all scenes (no
+    redundant ``os.walk`` per scene).
     """
-    if scene_ids is not None:
-        for sid in scene_ids:
-            yield load_scene(root, sid)
-        return
     index = _index_scenes(root)
-    for sid in sorted(index):
-        yield load_scene(root, sid)
+    ids = scene_ids if scene_ids is not None else sorted(index)
+    for sid in ids:
+        rgb_path = index.get(sid)
+        if rgb_path is None:
+            raise FileNotFoundError(
+                f"Cornell scene pcd{sid}r.png not found under {root}"
+            )
+        yield _load_scene_from_path(sid, rgb_path)
 
 
 def rasterize_cornell_mask(
