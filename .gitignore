@@ -8,11 +8,16 @@ __pycache__/
 
 # Distribution / packaging
 
-datasets/Jacquard_V2
+datasets/
 /models/
 _attempt_1/checkpoints
 _attempt_1/dataset_old_structure
 _attempt_2/weights_try_1
+# Локальные training/eval артефакты (чекпоинты, metrics.csv, resolved_config.yaml,
+# splits) — не должны попадать в git.
+train_results/
+runs/
+checkpoints/
 
 .Python
 build/
