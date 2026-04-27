@@ -123,12 +123,18 @@ def figure_compare_models_cornell(
             axes[r, 0].set_title(f"GT-захваты Cornell\n(сцена {scene.scene_id})",
                                   fontsize=10)
 
+        # Cornell ships pre-rendered depth as ``pcdNNNNd.tiff`` next to
+        # the RGB file in the standard Kaggle redistribution; the loader
+        # normalises it with the same robust 1/99-percentile rule used
+        # for Jacquard. Fall back to zeros if depth is missing.
+        if scene.depth is not None:
+            depth_in = scene.depth
+        else:
+            depth_in = np.zeros(rgb_native.shape[:2], dtype=np.float32)
+
         for c, runner in enumerate(runners, start=1):
-            # Cornell has no depth → models with input_mode='rgbd' get a
-            # zero depth channel; those trained on depth-only would just
-            # see zeros (we still run them so we never silently skip).
             overlay, decoded, _ = _predict_overlay(
-                runner, rgb_native, np.zeros(rgb_native.shape[:2], dtype=np.float32),
+                runner, rgb_native, depth_in,
                 decode_cfg=decode_cfg,
             )
             ok = False

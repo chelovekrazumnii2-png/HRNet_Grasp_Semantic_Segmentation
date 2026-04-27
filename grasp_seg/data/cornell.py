@@ -38,6 +38,7 @@ import cv2
 import numpy as np
 
 from .grasp_rect import Grasp, rasterize_grasp_mask
+from .jacquard_v2 import _load_depth, _normalise_depth
 
 
 _SCENE_RE = re.compile(r"pcd(\d+)r\.png$")
@@ -115,6 +116,9 @@ class CornellSample:
     rgb: np.ndarray            # float32 HxWx3 in [0, 1]
     pos_grasps: List[Grasp]
     neg_grasps: List[Grasp]
+    depth: Optional[np.ndarray] = None       # float32 HxW in [0, 1] or None
+    depth_path: Optional[str] = None
+    depth_raw: Optional[np.ndarray] = None   # raw (pre-normalisation) depth
 
 
 def _index_scenes(root: str) -> Dict[str, str]:
@@ -158,8 +162,22 @@ def list_scenes(root: str, *, index: Optional[Dict[str, str]] = None) -> List[st
     return sorted(index.keys())
 
 
-def _load_scene_from_path(scene_id: str, rgb_path: str) -> CornellSample:
-    """Internal worker: read RGB + cpos/cneg from a resolved RGB path."""
+def _load_scene_from_path(
+    scene_id: str,
+    rgb_path: str,
+    *,
+    load_depth: bool = True,
+) -> CornellSample:
+    """Internal worker: read RGB + cpos/cneg (+ optional depth) from a
+    resolved RGB path.
+
+    Cornell ships pre-rendered depth as ``pcdNNNNd.tiff`` next to the RGB
+    file in some redistributions (e.g. the Kaggle mirror). When present,
+    we load it and normalise it with the same robust 1/99-percentile
+    rule used by :mod:`grasp_seg.data.jacquard_v2` so that the resulting
+    depth distribution looks similar to the one the RGB-D models were
+    trained on.
+    """
     img = cv2.imread(rgb_path, cv2.IMREAD_COLOR)
     if img is None:
         raise FileNotFoundError(rgb_path)
@@ -170,12 +188,39 @@ def _load_scene_from_path(scene_id: str, rgb_path: str) -> CornellSample:
     neg_path = os.path.join(scene_dir, f"pcd{scene_id}cneg.txt")
     pos = [_grasp_from_corners(c) for c in _read_corners_file(pos_path)]
     neg = [_grasp_from_corners(c) for c in _read_corners_file(neg_path)]
+
+    depth_path: Optional[str] = None
+    depth_raw: Optional[np.ndarray] = None
+    depth_norm: Optional[np.ndarray] = None
+    if load_depth:
+        cand = os.path.join(scene_dir, f"pcd{scene_id}d.tiff")
+        if os.path.isfile(cand):
+            try:
+                depth_raw = _load_depth(cand)
+                # Resize depth to RGB dims if mismatched (rare — Cornell
+                # is usually 640×480 for both, but Kaggle dumps occasionally
+                # ship a 320×240 depth).
+                if depth_raw.shape[:2] != rgb.shape[:2]:
+                    depth_raw = cv2.resize(
+                        depth_raw, (rgb.shape[1], rgb.shape[0]),
+                        interpolation=cv2.INTER_NEAREST,
+                    )
+                depth_norm = _normalise_depth(depth_raw)
+                depth_path = cand
+            except Exception:
+                depth_raw = None
+                depth_norm = None
+                depth_path = None
+
     return CornellSample(
         scene_id=scene_id,
         rgb_path=rgb_path,
         rgb=rgb,
         pos_grasps=[g for g in pos if g is not None],
         neg_grasps=[g for g in neg if g is not None],
+        depth=depth_norm,
+        depth_path=depth_path,
+        depth_raw=depth_raw,
     )
 
 
@@ -184,12 +229,15 @@ def load_scene(
     scene_id: str,
     *,
     index: Optional[Dict[str, str]] = None,
+    load_depth: bool = True,
 ) -> CornellSample:
     """Load a single Cornell scene by its 4-digit ID.
 
     Pass a pre-built ``index`` to skip the recursive ``os.walk``. When
     iterating over many scenes, build the index once and reuse it across
     calls (or use :func:`iter_scenes`, which already does this).
+    Set ``load_depth=False`` to skip the ``pcdNNNNd.tiff`` lookup if you
+    only need RGB + grasps.
     """
     if index is not None:
         rgb_path = index.get(scene_id)
@@ -202,10 +250,15 @@ def load_scene(
         raise FileNotFoundError(
             f"Cornell scene pcd{scene_id}r.png not found under {root}"
         )
-    return _load_scene_from_path(scene_id, rgb_path)
+    return _load_scene_from_path(scene_id, rgb_path, load_depth=load_depth)
 
 
-def iter_scenes(root: str, scene_ids: Optional[List[str]] = None):
+def iter_scenes(
+    root: str,
+    scene_ids: Optional[List[str]] = None,
+    *,
+    load_depth: bool = True,
+):
     """Iterate ``CornellSample`` instances over the dataset.
 
     Builds the recursive index once and reuses it across all scenes (no
@@ -219,7 +272,7 @@ def iter_scenes(root: str, scene_ids: Optional[List[str]] = None):
             raise FileNotFoundError(
                 f"Cornell scene pcd{sid}r.png not found under {root}"
             )
-        yield _load_scene_from_path(sid, rgb_path)
+        yield _load_scene_from_path(sid, rgb_path, load_depth=load_depth)
 
 
 def rasterize_cornell_mask(
