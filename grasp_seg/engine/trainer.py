@@ -261,10 +261,11 @@ class Trainer:
             }
             if profile_gpu:
                 # bytes -> GB. memory_allocated is the live tensor footprint
-                # at this moment; max_memory_allocated is the running peak
-                # since reset_peak_memory_stats was called at epoch start.
+                # at this moment, so averaging across steps is meaningful
+                # ("typical pressure during the epoch"). gpu_mem_peak_gb is
+                # NOT averaged — it is a running max, captured once at the
+                # end of the epoch below.
                 timing["gpu_mem_alloc_gb"] = torch.cuda.memory_allocated(self.device) / (1024 ** 3)
-                timing["gpu_mem_peak_gb"] = torch.cuda.max_memory_allocated(self.device) / (1024 ** 3)
                 if nvml_handle is not None:
                     util = self._nvml_utilization(nvml_handle)
                     if util is not None:
@@ -273,7 +274,16 @@ class Trainer:
 
         # Final partial accumulation flush
         # (drop the partial gradients to keep step boundaries clean)
-        return meters.avg()
+        result = meters.avg()
+        if profile_gpu:
+            # Read the actual peak once, after the loop. Putting this through
+            # MeterDict would average a monotonically non-decreasing series
+            # and underreport the true peak, defeating the OOM-risk check
+            # documented in docs/multitask_phase2.md.
+            result["gpu_mem_peak_gb"] = (
+                torch.cuda.max_memory_allocated(self.device) / (1024 ** 3)
+            )
+        return result
 
     # ------------------------------------------------------------------
     def fit(self) -> TrainState:
