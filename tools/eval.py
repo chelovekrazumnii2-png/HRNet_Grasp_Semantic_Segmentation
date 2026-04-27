@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from typing import Any, Dict
 
 # Make the package importable when launched directly from the repo root.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -25,15 +26,64 @@ def _input_channels(input_mode: str) -> int:
     return {"rgb": 3, "depth": 1, "rgbd": 4}[input_mode]
 
 
+def _parse_cli_overrides(argv):
+    """Pull ``a.b.c=value`` overrides off the argv tail.
+
+    Mirrors the helper in tools/train.py so the Colab notebook can pass the
+    same ``dataset.splits_path=...`` style flags to either entry point.
+    """
+    overrides: Dict[str, str] = {}
+    rest = []
+    for a in argv:
+        if "=" in a and not a.startswith("--"):
+            k, v = a.split("=", 1)
+            overrides[k] = v
+        else:
+            rest.append(a)
+    return overrides, rest
+
+
+def _override(cfg: Dict[str, Any], path: str, value: Any) -> None:
+    keys = path.split(".")
+    sub = cfg
+    for k in keys[:-1]:
+        if k not in sub:
+            raise KeyError(f"Unknown config path: {path}")
+        sub = sub[k]
+    leaf = keys[-1]
+    if leaf not in sub:
+        raise KeyError(f"Unknown config path: {path}")
+    cur = sub[leaf]
+    # cast to the existing type when possible so "true"/"42" round-trip cleanly
+    if isinstance(cur, bool):
+        v = str(value).lower() in ("1", "true", "yes")
+    elif isinstance(cur, int) and not isinstance(cur, bool):
+        v = int(value)
+    elif isinstance(cur, float):
+        v = float(value)
+    elif isinstance(cur, list):
+        v = yaml.safe_load(value)
+    else:
+        v = value
+    sub[leaf] = v
+
+
 def main():
-    p = argparse.ArgumentParser()
+    p = argparse.ArgumentParser(allow_abbrev=False)
     p.add_argument("--config", required=True)
     p.add_argument("--checkpoint", required=True)
     p.add_argument("--split", choices=["train", "val", "test"], default="test")
-    args = p.parse_args(sys.argv[1:])
+    overrides, argv_rest = _parse_cli_overrides(sys.argv[1:])
+    args = p.parse_args(argv_rest)
 
     with open(args.config, "r") as f:
         cfg = yaml.safe_load(f)
+
+    for path, value in overrides.items():
+        _override(cfg, path, value)
+    if overrides:
+        get_logger("eval").info("applied %d CLI override(s): %s",
+                                len(overrides), overrides)
 
     ds_cfg = DatasetConfig(
         image_size=cfg["dataset"]["image_size"],
