@@ -1,29 +1,26 @@
-# RGB-only configuration (3 input channels, no depth).
-# Useful when the depth modality isn't available at inference time, or for
-# ablating the contribution of the depth channel. Inherits the default
-# HRNet-W18 + angle-segmentation setup; only the input modality and the
-# depth-specific augmentations differ.
+# RGB-only variant of configs/multitask.yaml.
 #
-# Override any field via CLI, e.g.:
-#   python tools/train.py --config configs/rgb.yaml \
-#       dataset.splits_path=splits/jacquard_v2.json \
-#       trainer.save_dir=outputs/hrnet_w18_rgb_angle
+# Same GG-CNN-style head (pos / cos2t / sin2t / width) as configs/multitask.yaml,
+# but trained from 3-channel RGB frames instead of 4-channel RGB-D. Used as the
+# RGB ablation half of the Phase 2a head-to-head: configs/multitask.yaml runs
+# on A100 (RGB-D), this one runs in parallel on T4 (RGB-only) so we can answer
+# "does the depth channel buy anything?" with the same head and loss on both
+# sides.
 seed: 0
 
 dataset:
   root: /path/to/JacquardV2_Dataset
   splits_path: splits/jacquard_v2.json
   image_size: 384
-  input_mode: rgb                         # <-- RGB only (3 channels). The model's
-                                          # first conv keeps its full ImageNet weights.
-  mask_mode: angle
+  input_mode: rgb                         # 3-channel RGB (no depth)
+  mask_mode: multitask
   num_angle_bins: 18
   length_scale: 0.3333
   use_stereo_depth: false                 # ignored when input_mode=rgb
   num_workers: 2
   pin_memory: true
-  persistent_workers: false               # set true on Colab/Kaggle: avoids ~5 s/epoch of worker re-spawn
-  prefetch_factor: 2                      # increase to 4 on cloud GPUs to keep the model fed during fwd/bwd
+  persistent_workers: false
+  prefetch_factor: 2
 
 augmentation:
   enable: true
@@ -42,8 +39,7 @@ augmentation:
   hue: 0.05
   rgb_noise_p: 0.3
   rgb_noise_std: 0.02
-  # depth-specific augmentations are no-ops without a depth channel — set p=0
-  # to make that explicit and keep logs uncluttered.
+  # depth-specific augmentations are no-ops without a depth channel.
   depth_jitter_p: 0.0
   depth_jitter_range: [1.0, 1.0]
   depth_dropout_p: 0.0
@@ -69,12 +65,12 @@ trainer:
   warmup_epochs: 1.0
   grad_clip: 1.0
   log_interval: 20
-  save_dir: outputs/run_rgb
+  save_dir: outputs/multitask_rgb         # isolate from outputs/multitask (RGB-D)
   eval_every: 1
   amp: true
   save_every_epoch: true
   metrics_csv: metrics.csv
-  profile_timing: true
+  profile_timing: true                    # per-epoch data/compute timing + dataload_fraction in logs and metrics.csv
 
 loss:
   bce_weight: 1.0
