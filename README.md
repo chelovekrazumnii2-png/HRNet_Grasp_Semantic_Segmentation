@@ -19,12 +19,17 @@ grasp_seg/
   models/hrnet.py           # HRNet-W18 (+ Small-v2) + 4-канальный первый conv
   losses/                   # BCE+Dice / CE+Dice / multitask
   engine/                   # Trainer (AMP + accum) и валидация (mIoU / Dice / F1)
+  viz/                      # визуализация: rect drawing, mask overlays, decoder, dataset/training/eval/compare/extras
 tools/
   prepare_split.py          # построение object-wise сплитов
   train.py                  # запуск обучения
   eval.py                   # инференс/метрики на сплите
+  visualize.py              # CLI-генератор всех картинок для отчёта (PNG)
+notebooks/visualize.ipynb   # ноутбук-оркестратор (русские подписи, Colab/local/Kaggle)
 scripts/smoke_test.py       # smoke-тест на 8 синтетических сценах
 ```
+
+Подробное описание визуализаций — `docs/visualization.md`.
 
 ## Установка
 
@@ -194,5 +199,27 @@ python tools/train.py --config configs/default.yaml \
   умолчанию). Если NaN’ы мешают — выставьте `0.0` и тренируйте только на
   `perfect_depth`.
 - `eval.py` оценивает в пиксельном пространстве. Для grasp-rectangle IoU-
-  метрики (Jacquard standard) нужно дополнительно декодировать предсказания
-  обратно в прямоугольники — это можно добавить позже.
+  метрики (Jacquard standard) реализован декодер
+  `grasp_seg/viz/decoder.py` (peak-finding + NMS + polygon IoU); им
+  пользуется ноутбук `notebooks/visualize.ipynb` для расчёта top-1 / top-5
+  accuracy.
+
+## Визуализация для отчёта
+
+Чтобы быстро собрать набор PNG-картинок для отчёта/презентации/защиты:
+
+```bash
+# Все секции сразу (датасет / обучение / эволюция / лучшая эпоха / сравнение / extras)
+python tools/visualize.py \
+    --jacquard-root /path/to/JacquardV2 \
+    --splits-path splits/jacquard_v2.json \
+    --cornell-root /path/to/cornell \
+    --run multitask_rgb=/runs/multitask_rgb \
+    --run multitask_rgbd=/runs/multitask_rgbd \
+    --run angle_rgbd=/runs/angle_rgbd \
+    --out outputs/viz/report
+```
+
+Удобнее — пошаговый ноутбук с русскими подписями
+[`notebooks/visualize.ipynb`](notebooks/visualize.ipynb). Подробности —
+[`docs/visualization.md`](docs/visualization.md).

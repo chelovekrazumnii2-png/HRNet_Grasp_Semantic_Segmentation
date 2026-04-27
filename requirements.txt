@@ -20,4 +20,9 @@ imageio>=2.28
 pyyaml>=6.0
 tqdm>=4.65
 tensorboard>=2.13
+
+# Visualisation (used by grasp_seg/viz/, tools/visualize.py, notebooks/visualize.ipynb)
 matplotlib>=3.6
+pandas>=2.0
+scipy>=1.10        # gaussian_filter / maximum_filter for the grasp-rectangle decoder
+seaborn>=0.12      # nicer style for report-quality plots (optional but light-weight)
