@@ -12,7 +12,8 @@ Two families of figures live here:
    map by hooking the last shared feature stack of HRNet (``self.fuse``)
    and back-propagating the spatial mean of the foreground / ``pos``
    logit. The result is upsampled to the model image size, normalised
-   to ``[0, 1]``, and overlaid on the input RGB.
+   to ``[0, 1]``, and rendered as a standalone colormapped heatmap
+   alongside the RGB (no underlay).
 
 Both figures use :func:`compare_viz._scene_to_model_space` for Cornell
 inputs to preserve aspect ratio (pad-to-square + uniform resize),
@@ -31,7 +32,7 @@ import torch
 import torch.nn.functional as F
 
 from ..data.cornell import CornellSample
-from . import dataset_viz, draw, palette
+from . import dataset_viz, palette
 from .inference import ModelRunner
 
 Source = Union[str, CornellSample, Tuple[np.ndarray, Optional[np.ndarray]]]
@@ -263,11 +264,16 @@ def figure_grad_cam(
     cmap: str = "jet",
     title: Optional[str] = None,
 ):
-    """Grad-CAM grid: for every scene in ``sources`` render RGB + overlay.
+    """Grad-CAM grid: for every scene render RGB + standalone heatmap.
 
-    Each panel pair is ``[RGB][RGB+CAM]``; rows wrap at ``n_cols`` panel
-    pairs (so visual width = ``2 * n_cols``).
+    Each panel pair is ``[RGB][CAM]``; the right panel shows the
+    colormapped Grad-CAM map by itself (no RGB underlay) so the
+    saliency is unambiguous to read. Rows wrap at ``n_cols`` panel
+    pairs (visual width = ``2 * n_cols``).
+
+    ``alpha`` is kept for backward-compat but no longer used.
     """
+    del alpha  # standalone heatmap; underlay was removed by request
     if not sources:
         raise ValueError("sources must be non-empty")
 
@@ -292,8 +298,7 @@ def figure_grad_cam(
         ax_rgb.imshow(rgb_disp); ax_rgb.set_axis_off()
         ax_rgb.set_title(label or "RGB", fontsize=9)
 
-        overlay = draw.overlay_heatmap(rgb_disp, cam, cmap=cmap, alpha=alpha)
-        ax_cam.imshow(np.clip(overlay, 0, 1))
+        ax_cam.imshow(cam, cmap=cmap, vmin=0.0, vmax=1.0)
         ax_cam.set_axis_off()
         ax_cam.set_title("Grad-CAM", fontsize=9)
 
