@@ -14,10 +14,12 @@ notebook (``notebooks/visualize.ipynb``):
 - :mod:`eval_viz`      — best-epoch qualitative + per-class IoU panels
 - :mod:`compare_viz`   — side-by-side comparison of multiple models
 - :mod:`extra_viz`     — depth-contribution / IoU×angle / failure catalog
+- :mod:`cornell_eval`  — quantitative top-1 grasp accuracy on Cornell
 """
 
 from . import (
     compare_viz,
+    cornell_eval,
     dataset_viz,
     decoder,
     draw,
@@ -40,4 +42,5 @@ __all__ = [
     "eval_viz",
     "compare_viz",
     "extra_viz",
+    "cornell_eval",
 ]
