@@ -14,6 +14,7 @@
 | Лучшая эпоха | `grasp_seg/viz/eval_viz.py` | Для каждой модели: вход / GT / предсказание / GT-rect vs decoded-rect / карта ошибок; bar-chart per-bin IoU |
 | Сравнение моделей | `grasp_seg/viz/compare_viz.py` | Side-by-side всех загруженных моделей на нескольких сценах Jacquard/Cornell |
 | Дополнительно | `grasp_seg/viz/extra_viz.py` | IoU vs угол, depth contribution heatmap (RGB-D − RGB), failure case catalog с эвристическими причинами |
+| Что видит модель | `grasp_seg/viz/heatmap_viz.py` | Per-head декомпозиция (`pos`, `cos2θ`, `sin2θ`, `width` или `fg_conf` + раскраска углов) и Grad-CAM по последнему общему слою HRNet |
 
 ## Декодер masks → grasp rectangles
 
@@ -146,3 +147,46 @@ Cornell — 480×640, модели — `image_size × image_size` (обычно 
 `image_size`. Аспект сохраняется, углы граспов остаются неизменными,
 центры/длины/ширины масштабируются равномерно. Это тот же
 координатный frame, в котором работает `figure_compare_models_cornell`.
+
+## Что видит модель — heatmap-карты
+
+Модуль `grasp_seg/viz/heatmap_viz.py` отвечает на два смежных вопроса:
+
+### Per-head декомпозиция (`figure_per_head_heatmap`)
+
+Что **выдаёт** модель для одной сцены. Раскладка зависит от `mask_mode`:
+
+- **multitask** — 2×3: RGB | depth | `pos` (графическая «вероятность
+  захвата», sigmoid) | `cos2θ` | `sin2θ` | `width` (sigmoid). У каждой
+  карты свой colorbar; диапазоны фиксированы (`pos`, `width` ∈ [0, 1];
+  `cos2θ`, `sin2θ` ∈ [−1, 1] на палитре `RdBu`).
+- **angle** — 1×4: RGB | depth | `fg_conf` (1 − p_bg) | argmax-bin,
+  раскрашенный палитрой `palette.angle_cmap`.
+- **binary** — 1×3: RGB | depth | `pos`.
+
+Источник сцены может быть:
+- путём к `*_grasps.txt` (Jacquard);
+- объектом `CornellSample` (в этом случае автоматически применяется
+  `_scene_to_model_space`, чтобы аспект 4:3 сохранялся);
+- кортежем `(rgb, depth)`.
+
+### Grad-CAM (`figure_grad_cam`, `compute_grad_cam`)
+
+«Куда модель смотрит» — карта градиентов, классическая Grad-CAM по
+последнему общему фичемап-стеку HRNet (`HRNetSeg.fuse` /
+`HRNetMultiTask._seg.fuse`). Реализация:
+
+1. Регистрируются прямой и обратный хуки на `fuse`.
+2. Для прохода с `requires_grad=True` параметрам выставляется
+   `requires_grad=False`, а сам входной тензор требует grad — этого
+   достаточно, чтобы автоград построил граф через всю сеть.
+3. Целевой скаляр зависит от `mask_mode`:
+   - multitask: среднее по `out["pos"]` (логит до sigmoid);
+   - binary:   среднее по логиту;
+   - angle:    среднее по логитам каналов 1..K (foreground bins).
+4. Веса каналов = пространственное среднее градиентов; CAM =
+   ReLU(Σ_k w_k · A_k); upsample bilinear до `image_size`; нормировка
+   до `[0, 1]`.
+
+Ноутбук: секция **8** (`8.1` — per-head, `8.2` — Grad-CAM).
+Сохраняемые файлы: `outputs/viz/.../heatmaps/*.png`.

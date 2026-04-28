@@ -15,6 +15,7 @@ notebook (``notebooks/visualize.ipynb``):
 - :mod:`compare_viz`   — side-by-side comparison of multiple models
 - :mod:`extra_viz`     — depth-contribution / IoU×angle / failure catalog
 - :mod:`cornell_eval`  — quantitative top-1 grasp accuracy on Cornell
+- :mod:`heatmap_viz`   — per-head decomposition + Grad-CAM ("what the model sees")
 """
 
 from . import (
@@ -26,6 +27,7 @@ from . import (
     epoch_evolution,
     eval_viz,
     extra_viz,
+    heatmap_viz,
     inference,
     metrics_viz,
     palette,
@@ -43,4 +45,5 @@ __all__ = [
     "compare_viz",
     "extra_viz",
     "cornell_eval",
+    "heatmap_viz",
 ]
