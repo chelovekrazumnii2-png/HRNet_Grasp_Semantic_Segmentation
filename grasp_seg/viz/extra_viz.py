@@ -315,7 +315,7 @@ def figure_cornell_failures(
         key=lambda sr: (sr[1]["top1_iou"], -sr[1]["top1_angle_err_deg"]),
     )[:n_show]
 
-    n_rows = int(math.ceil(len(pairs) / n_cols))
+    n_rows = max(1, int(math.ceil(len(pairs) / n_cols)))
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(4.0 * n_cols, 4.0 * n_rows))
     axes = np.atleast_2d(axes)
 
