@@ -279,3 +279,87 @@ def figure_failure_catalog(
     )
     fig.tight_layout()
     return fig
+
+
+# ---------------------------------------------------------------------------
+# Cornell failure catalog (cross-domain)
+# ---------------------------------------------------------------------------
+
+def figure_cornell_failures(
+    runner: ModelRunner,
+    scenes: Sequence,
+    records: Sequence[dict],
+    *,
+    n_show: int = 12,
+    n_cols: int = 4,
+    decode_cfg: Optional[decoder.DecodeConfig] = None,
+    title: Optional[str] = None,
+):
+    """Top-N worst Cornell scenes for ``runner``, ranked by ``top1_iou``.
+
+    ``scenes`` and ``records`` must be parallel sequences (same order, same
+    length). ``records`` is the output of
+    :func:`grasp_seg.viz.cornell_eval.evaluate_cornell` for this runner.
+    """
+    from .compare_viz import _scene_to_model_space  # avoid circular import
+
+    if len(scenes) != len(records):
+        raise ValueError(
+            f"scenes ({len(scenes)}) and records ({len(records)}) "
+            "must have the same length"
+        )
+
+    # Sort by ascending top1_iou (worst first); break ties by larger angle err.
+    pairs = sorted(
+        zip(scenes, records),
+        key=lambda sr: (sr[1]["top1_iou"], -sr[1]["top1_angle_err_deg"]),
+    )[:n_show]
+
+    n_rows = int(math.ceil(len(pairs) / n_cols))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4.0 * n_cols, 4.0 * n_rows))
+    axes = np.atleast_2d(axes)
+
+    img_size = runner.image_size
+    for i, (scene, rec) in enumerate(pairs):
+        ax = axes[i // n_cols, i % n_cols]
+        rgb_m, depth_m, gt_m, _, _, _ = _scene_to_model_space(
+            scene.rgb, scene.depth, scene.pos_grasps, img_size,
+        )
+        pred = runner.predict(rgb=rgb_m, depth=depth_m)
+        if runner.info.mask_mode == "angle":
+            decoded = decoder.decode_angle(pred["fg_conf"], pred["argmax"],
+                                            runner.info.num_angle_bins, cfg=decode_cfg)
+        elif runner.info.mask_mode == "multitask":
+            decoded = decoder.decode_multitask(pred["pos"], pred["cos2t"],
+                                                pred["sin2t"], pred["width"],
+                                                cfg=decode_cfg)
+        else:
+            decoded = []
+
+        img = draw.draw_grasp_list(rgb_m, gt_m, max_n=10,
+                                    color=(0.1, 1.0, 0.2),
+                                    plate_color=(0.1, 1.0, 0.2),
+                                    thickness=2)
+        img = draw.draw_grasp_list(img, [g for g, _ in decoded[:3]],
+                                    color=(1.0, 0.2, 0.2),
+                                    plate_color=(1.0, 0.2, 0.2),
+                                    thickness=2)
+        ax.imshow(np.clip(img, 0, 1))
+        ax.set_axis_off()
+        ax.set_title(
+            f"сцена {scene.scene_id} | top-1: "
+            f"{'✓' if rec['top1_ok'] else '×'}\n"
+            f"IoU={rec['top1_iou']:.2f}, "
+            f"Δθ={rec['top1_angle_err_deg']:.0f}°",
+            fontsize=9,
+        )
+
+    for j in range(len(pairs), n_rows * n_cols):
+        axes[j // n_cols, j % n_cols].set_axis_off()
+
+    fig.suptitle(
+        title or f"Cornell — худшие сцены ({len(pairs)}) — {runner.info.name}",
+        fontsize=12,
+    )
+    fig.tight_layout()
+    return fig
