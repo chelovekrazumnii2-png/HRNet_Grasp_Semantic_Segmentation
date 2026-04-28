@@ -188,5 +188,9 @@ Cornell — 480×640, модели — `image_size × image_size` (обычно 
    ReLU(Σ_k w_k · A_k); upsample bilinear до `image_size`; нормировка
    до `[0, 1]`.
 
+`figure_grad_cam` рендерит для каждой сцены пару панелей `[RGB][CAM]`,
+где правая панель — самостоятельная colormapped heatmap (без RGB-подложки),
+чтобы саливенс был однозначно читаем.
+
 Ноутбук: секция **8** (`8.1` — per-head, `8.2` — Grad-CAM).
 Сохраняемые файлы: `outputs/viz/.../heatmaps/*.png`.
