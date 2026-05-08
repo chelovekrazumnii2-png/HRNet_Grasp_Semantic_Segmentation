@@ -163,7 +163,13 @@ def _scene_dir(out_root: str, subdir: Optional[str]) -> str:
 
 
 def _next_pcd_id(scene_dir: str, start_id: Optional[int]) -> int:
-    """Return the next ``pcdNNNN`` id to use, scanning existing files."""
+    """Return the next ``pcdNNNN`` id to use, scanning existing files.
+
+    Always returns ``max(existing) + 1`` (or 0 when empty) so we never
+    overwrite a file. Filling gaps would be tempting but the main loop
+    increments the id blindly after each save, which would clobber the
+    next existing file on the second save.
+    """
     if start_id is not None:
         return int(start_id)
     used = set()
@@ -172,10 +178,7 @@ def _next_pcd_id(scene_dir: str, start_id: Optional[int]) -> int:
             m = _PCD_RE.search(name)
             if m:
                 used.add(int(m.group(1)))
-    i = 0
-    while i in used:
-        i += 1
-    return i
+    return max(used) + 1 if used else 0
 
 
 def _save_scene(scene_dir: str, idx: int, rgb_bgr: np.ndarray,
@@ -288,8 +291,12 @@ def main() -> None:
 
     scene_dir = _scene_dir(args.out, args.subdir)
     next_id = _next_pcd_id(scene_dir, args.start_id)
-    log_path = os.path.join(scene_dir, "capture.log")
-    intr_path = os.path.join(scene_dir, "intrinsics.json")
+    # intrinsics.json + capture.log live at the dataset root so a single
+    # session covering multiple subdirs (01/, 02/, ...) shares them, and
+    # the layout matches docs/realsense_setup.md.
+    os.makedirs(args.out, exist_ok=True)
+    log_path = os.path.join(args.out, "capture.log")
+    intr_path = os.path.join(args.out, "intrinsics.json")
     if not os.path.isfile(intr_path):
         with open(intr_path, "w", encoding="utf-8") as f:
             json.dump(intr, f, indent=2)

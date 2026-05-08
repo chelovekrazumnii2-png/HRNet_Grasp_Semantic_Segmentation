@@ -108,7 +108,12 @@ def _make_pipeline(width: int, height: int, fps: int,
 # ---------------------------------------------------------------------------
 
 def _next_index(out_dir: str, prefix: str = "snap_") -> int:
-    """Return the next free 4-digit index for ``snap_NNNN_*`` files."""
+    """Return the next free 4-digit index for ``snap_NNNN_*`` files.
+
+    Always ``max(existing) + 1`` (or 0 when empty) so we never overwrite —
+    the main loop increments the index blindly after each save, so a
+    gap-filling strategy would clobber the next existing file.
+    """
     if not os.path.isdir(out_dir):
         return 0
     used = set()
@@ -117,10 +122,7 @@ def _next_index(out_dir: str, prefix: str = "snap_") -> int:
             tail = name[len(prefix):len(prefix) + 4]
             if tail.isdigit():
                 used.add(int(tail))
-    i = 0
-    while i in used:
-        i += 1
-    return i
+    return max(used) + 1 if used else 0
 
 
 def _save_pair(out_dir: str, idx: int, rgb_bgr: np.ndarray,
