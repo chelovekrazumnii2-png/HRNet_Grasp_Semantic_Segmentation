@@ -319,6 +319,27 @@ class Trainer:
         return result
 
     # ------------------------------------------------------------------
+    def _close_iter_log(self) -> None:
+        """Idempotently flush + close the per-step JSONL log file handle.
+
+        Called from ``fit()``'s ``finally`` clause so the file is properly
+        released even if training is interrupted by CUDA OOM, NaN, KeyboardInterrupt,
+        or any other exception. On Windows (the target platform of the local-training
+        notebook), an unreleased handle would prevent another process from reading
+        the file, so explicit cleanup matters.
+        """
+        if self._iter_log_fp is not None:
+            try:
+                self._iter_log_fp.flush()
+            except Exception:
+                pass
+            try:
+                self._iter_log_fp.close()
+            except Exception:
+                pass
+            self._iter_log_fp = None
+
+    # ------------------------------------------------------------------
     def fit(self) -> TrainState:
         # On resume, ``self.state.epoch`` is the index of the *last completed*
         # epoch (it was saved after that epoch's epoch_NNN.pth was written), so
@@ -326,6 +347,13 @@ class Trainer:
         # the already-completed epoch and advance global_step / scheduler past
         # their checkpointed values.
         start_epoch = self.state.epoch + 1 if self.state.global_step > 0 else 0
+        try:
+            return self._fit_loop(start_epoch)
+        finally:
+            self._close_iter_log()
+
+    # ------------------------------------------------------------------
+    def _fit_loop(self, start_epoch: int) -> TrainState:
         for epoch in range(start_epoch, self.cfg.epochs):
             self.state.epoch = epoch
             train_metrics = self.train_one_epoch()
@@ -381,12 +409,10 @@ class Trainer:
                 self.save_checkpoint(f"epoch_{epoch:03d}.pth", val_metrics)
             self._append_metrics_row(epoch, train_metrics, val_metrics)
             # Flush per-step log so the file is up-to-date on disk if the
-            # process is killed mid-run (or the kernel restarts).
+            # process is killed mid-run (or the kernel restarts). The actual
+            # close is in fit()'s finally clause, see _close_iter_log().
             if self._iter_log_fp is not None:
                 self._iter_log_fp.flush()
-        if self._iter_log_fp is not None:
-            self._iter_log_fp.close()
-            self._iter_log_fp = None
         return self.state
 
     # ------------------------------------------------------------------
