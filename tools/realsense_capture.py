@@ -276,6 +276,12 @@ def main() -> None:
                    help="Don't open OpenCV preview windows (headless).")
     args = p.parse_args()
 
+    # Headless mode has no keyboard input, so manual save/quit is impossible.
+    # Reject the combination explicitly rather than silently looping forever.
+    if args.no_window and args.mode == "manual":
+        p.error("--no-window requires --mode interval "
+                "(manual mode needs a window to read 's'/'b'/'q' keys)")
+
     pipeline, aligner, depth_scale, intr = _make_pipeline(
         args.width, args.height, args.fps, args.depth_preset,
     )
