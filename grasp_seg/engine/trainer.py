@@ -227,6 +227,14 @@ class Trainer:
         profile = bool(getattr(self.cfg, "profile_timing", True))
         cuda_sync = (self.device.type == "cuda") and profile
         t_step_end = time.perf_counter()  # marks end of previous step
+        # Accumulator for the per-optimizer-step JSONL row. We sum the loss
+        # components across the ``accum`` micro-batches that contribute to a
+        # single optimizer step and divide by ``accum`` when the step fires.
+        # Without this, the JSONL would only capture the last micro-batch and
+        # ignore the other ``accum-1``, making the per-step curve ``accum``-times
+        # noisier than advertised.
+        step_loss_accum: dict = {}
+        step_microbatches = 0
         for step, batch in enumerate(self.train_loader):
             t_batch_ready = time.perf_counter()
             x = batch["input"].to(self.device, non_blocking=True)
@@ -240,6 +248,9 @@ class Trainer:
             log = {k: float(v.item() if torch.is_tensor(v) else v)
                    for k, v in loss_dict.items() if torch.is_tensor(v) or isinstance(v, (int, float))}
             meters.update(log, n=x.size(0))
+            for k, v in log.items():
+                step_loss_accum[k] = step_loss_accum.get(k, 0.0) + v
+            step_microbatches += 1
 
             if (step + 1) % accum == 0:
                 if self.cfg.grad_clip > 0:
@@ -260,21 +271,22 @@ class Trainer:
                     self.logger.info(msg)
 
                 # Per-step JSONL row (independent of console log_interval —
-                # captures *every* optimizer step). Loss/timing values are
-                # the *current step's* (last logged into MeterDict above).
+                # captures *every* optimizer step). Loss components are the
+                # mean across all ``step_microbatches`` micro-batches that
+                # contributed to this optimizer step (i.e. the same effective
+                # batch the optimizer just stepped on), not just the last one.
                 if self._iter_log_fp is not None:
-                    last_log = {
-                        k: float(v.item() if torch.is_tensor(v) else v)
-                        for k, v in loss_dict.items()
-                        if torch.is_tensor(v) or isinstance(v, (int, float))
-                    }
+                    n = max(step_microbatches, 1)
+                    step_avg = {k: v / n for k, v in step_loss_accum.items()}
                     row = {
                         "epoch": self.state.epoch,
                         "step": self.state.global_step,
                         "lr": float(self.optimizer.param_groups[0]["lr"]),
-                        **last_log,
+                        **step_avg,
                     }
                     self._iter_log_fp.write(json.dumps(row) + "\n")
+                step_loss_accum = {}
+                step_microbatches = 0
 
             # End-of-step sync + timing.
             if cuda_sync:
