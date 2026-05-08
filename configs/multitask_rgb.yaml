@@ -69,7 +69,9 @@ trainer:
   eval_every: 1
   amp: true
   save_every_epoch: true
+  save_every_n_epochs: 0
   metrics_csv: metrics.csv
+  iter_log_path: ""
   profile_timing: true                    # per-epoch data/compute timing + dataload_fraction in logs and metrics.csv
   profile_gpu: true                       # per-epoch GPU memory (allocated/peak GB) and utilization%
 

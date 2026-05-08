@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import csv
+import json
 import math
 import os
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import Callable, Optional, TextIO
 
 import torch
 import torch.nn as nn
@@ -42,7 +43,9 @@ class TrainerConfig:
     eval_every: int = 1
     target_metric: str = "miou_fg"  # which metric guides best-checkpointing
     save_every_epoch: bool = True   # also write epoch_NNN.pth alongside last/best
+    save_every_n_epochs: int = 0    # if >0, only write epoch_NNN.pth every N epochs (overrides save_every_epoch). best.pth + last.pth still update every epoch.
     metrics_csv: str = "metrics.csv"  # appended every epoch under save_dir
+    iter_log_path: str = ""         # if non-empty, write one JSONL line per optimizer step into this file (under save_dir if relative)
     profile_timing: bool = True     # measure data/forward/backward wall time (tiny overhead: one torch.cuda.synchronize per step)
     profile_gpu: bool = True        # log per-epoch GPU memory (allocated/peak) and utilization%
 
@@ -117,6 +120,19 @@ class Trainer:
         self.logger = get_logger("trainer")
         os.makedirs(cfg.save_dir, exist_ok=True)
         self._csv_path = os.path.join(cfg.save_dir, cfg.metrics_csv) if cfg.metrics_csv else None
+        # Per-step iteration log (one JSONL line per optimizer step). Useful for
+        # post-hoc plotting of loss/lr/timing at sub-epoch granularity without
+        # re-running training. Empty path disables it. Relative paths land
+        # under save_dir for tidiness.
+        self._iter_log_fp: Optional[TextIO] = None
+        if cfg.iter_log_path:
+            iter_path = cfg.iter_log_path
+            if not os.path.isabs(iter_path):
+                iter_path = os.path.join(cfg.save_dir, iter_path)
+            os.makedirs(os.path.dirname(iter_path) or ".", exist_ok=True)
+            # Append mode so resumed runs keep prior history.
+            self._iter_log_fp = open(iter_path, "a", encoding="utf-8")
+            self._iter_log_path = iter_path
         self._csv_keys: list[str] = []  # columns lazily expand as new metrics show up
         self._csv_rows: list[dict] = []  # all rows in memory; rewritten each append
         if self._csv_path and os.path.exists(self._csv_path):
@@ -243,6 +259,23 @@ class Trainer:
                            + " ".join(f"{k}={v:.4f}" for k, v in avg.items()))
                     self.logger.info(msg)
 
+                # Per-step JSONL row (independent of console log_interval —
+                # captures *every* optimizer step). Loss/timing values are
+                # the *current step's* (last logged into MeterDict above).
+                if self._iter_log_fp is not None:
+                    last_log = {
+                        k: float(v.item() if torch.is_tensor(v) else v)
+                        for k, v in loss_dict.items()
+                        if torch.is_tensor(v) or isinstance(v, (int, float))
+                    }
+                    row = {
+                        "epoch": self.state.epoch,
+                        "step": self.state.global_step,
+                        "lr": float(self.optimizer.param_groups[0]["lr"]),
+                        **last_log,
+                    }
+                    self._iter_log_fp.write(json.dumps(row) + "\n")
+
             # End-of-step sync + timing.
             if cuda_sync:
                 torch.cuda.synchronize()
@@ -337,9 +370,23 @@ class Trainer:
                     self.save_checkpoint("best.pth", val_metrics)
 
             self.save_checkpoint("last.pth", val_metrics)
-            if self.cfg.save_every_epoch:
+            # Per-epoch checkpoints. ``save_every_n_epochs > 0`` takes
+            # precedence over ``save_every_epoch`` so long runs (e.g. 150
+            # epochs) don't fill the disk with 150 checkpoints.
+            if self.cfg.save_every_n_epochs > 0:
+                if (epoch + 1) % self.cfg.save_every_n_epochs == 0 \
+                        or epoch == self.cfg.epochs - 1:
+                    self.save_checkpoint(f"epoch_{epoch:03d}.pth", val_metrics)
+            elif self.cfg.save_every_epoch:
                 self.save_checkpoint(f"epoch_{epoch:03d}.pth", val_metrics)
             self._append_metrics_row(epoch, train_metrics, val_metrics)
+            # Flush per-step log so the file is up-to-date on disk if the
+            # process is killed mid-run (or the kernel restarts).
+            if self._iter_log_fp is not None:
+                self._iter_log_fp.flush()
+        if self._iter_log_fp is not None:
+            self._iter_log_fp.close()
+            self._iter_log_fp = None
         return self.state
 
     # ------------------------------------------------------------------

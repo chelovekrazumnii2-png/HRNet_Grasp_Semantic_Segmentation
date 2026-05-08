@@ -1,0 +1,110 @@
+# HRNet-W18 + Jacquard V2, RGB-D multitask head, 512×512 resolution.
+#
+# Tuned for local training on RTX 4060 8 GB (Ryzen 5 5600G, 16 GB RAM,
+# Windows). Identical model/loss to configs/multitask.yaml — only the
+# image resolution, batch sizing, num_workers, and checkpoint policy
+# change so a 150-epoch run fits 8 GB VRAM and 16 GB system RAM and
+# doesn't drown the disk in checkpoints.
+#
+# Why 512?
+#   - 384×384 is what every previous Colab/Kaggle run used. Bumping to
+#     512×512 keeps more detail of small objects (and Cornell scenes)
+#     and is the highest power-of-2 stride-32-aligned resolution that
+#     still fits with batch=2 + AMP on 8 GB VRAM (forward+backward
+#     peak ≈ 6.2 GB on RTX 4060 in our smoke test).
+#
+# Why 150 epochs?
+#   - Long-horizon experiment to find the real plateau; the previous
+#     runs used 80 epochs and val_miou_fg was still rising slightly at
+#     the end of the multitask RGB-D run (epoch 26 best, epoch 80 a
+#     hair below). 150 with poly-decay should fully decay LR to ~0.
+#
+# Checkpoint policy:
+#   - save_every_epoch=false + save_every_n_epochs=5 → 30 epoch_*.pth
+#     files instead of 150. ~75 MB each → 2.3 GB total.
+#   - best.pth and last.pth still update every epoch.
+#   - Final epoch is always saved regardless of the stride.
+#
+# Per-iteration log:
+#   - iter_log_path="iter_log.jsonl" → one JSON-lines row per optimizer
+#     step under outputs/multitask_local512/. Useful for plotting
+#     loss/lr/timing at sub-epoch resolution.
+seed: 0
+
+dataset:
+  root: /path/to/JacquardV2_Dataset       # override from notebook
+  splits_path: splits/jacquard_v2.json
+  image_size: 512                          # ← key difference vs configs/multitask.yaml (was 384)
+  input_mode: rgbd
+  mask_mode: multitask
+  num_angle_bins: 18
+  length_scale: 0.3333
+  use_stereo_depth: false
+  num_workers: 4                           # 16 GB RAM: 4 workers safe with persistent_workers
+  pin_memory: true
+  persistent_workers: true                 # avoids ~5 s/epoch worker re-spawn
+  prefetch_factor: 2                       # don't burn RAM with 4 (would buffer ~4 batches per worker)
+
+augmentation:
+  enable: true
+  hflip_p: 0.5
+  vflip_p: 0.5
+  rotate_p: 0.8
+  rotate_max_deg: 180.0
+  scale_p: 0.7
+  scale_range: [0.8, 1.2]
+  translate_p: 0.5
+  translate_max_frac: 0.05
+  color_jitter_p: 0.5
+  brightness: 0.2
+  contrast: 0.2
+  saturation: 0.2
+  hue: 0.05
+  rgb_noise_p: 0.3
+  rgb_noise_std: 0.02
+  depth_jitter_p: 0.5
+  depth_jitter_range: [0.95, 1.05]
+  depth_dropout_p: 0.3
+  depth_dropout_frac: 0.02
+  use_stereo_depth_p: 0.3
+
+model:
+  backbone: hrnet_w18
+  pretrained: true
+  head_channels: 256
+  dropout: 0.1
+
+trainer:
+  epochs: 150                              # ← long-horizon plateau search (was 80)
+  batch_size: 2                            # ← 8 GB VRAM @ 512×512 fits batch=2 with AMP
+  accum_steps: 8                           # ← effective batch = 2 × 8 = 16 (matches 384×384 colab T4)
+  lr: 0.01
+  weight_decay: 5.0e-4
+  momentum: 0.9
+  optimizer: sgd
+  scheduler: poly
+  poly_power: 0.9
+  warmup_epochs: 1.0
+  grad_clip: 1.0
+  log_interval: 20                         # console line every 20 optimizer steps
+  save_dir: outputs/multitask_local512     # isolate from previous Colab runs
+  eval_every: 1                            # validate every epoch (best.pth updates)
+  target_metric: miou_fg                   # binary fg-vs-bg IoU on the pos head
+  amp: true
+  save_every_epoch: false                  # ← don't write 150 checkpoints
+  save_every_n_epochs: 5                   # ← write epoch_004, 009, 014, ..., 149 (+ always last)
+  metrics_csv: metrics.csv
+  iter_log_path: iter_log.jsonl            # ← per-step JSONL log
+  profile_timing: true
+  profile_gpu: true
+
+loss:
+  bce_weight: 1.0
+  dice_weight: 1.0
+  bce_pos_weight: 5.0
+  ce_weight: 1.0
+  ignore_background_in_dice: true
+  pos_weight: 1.0
+  cos_weight: 1.0
+  sin_weight: 1.0
+  width_weight: 0.1
