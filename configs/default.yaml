@@ -64,7 +64,9 @@ trainer:
   eval_every: 1
   amp: true
   save_every_epoch: true        # also write outputs/run/epoch_NNN.pth each epoch
+  save_every_n_epochs: 0        # if >0, only write epoch_NNN.pth every N epochs (overrides save_every_epoch). best.pth + last.pth still update every epoch.
   metrics_csv: metrics.csv      # appended every epoch under save_dir, set to "" to disable
+  iter_log_path: ""             # if non-empty, JSONL with one row per optimizer step (under save_dir if relative)
   profile_timing: true          # log per-epoch data/compute timing + dataload_fraction (~1ms/step overhead)
   profile_gpu: true             # log per-epoch GPU memory (allocated/peak GB) and utilization% (negligible overhead)
 

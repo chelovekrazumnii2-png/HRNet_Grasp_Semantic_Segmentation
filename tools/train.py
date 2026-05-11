@@ -214,9 +214,11 @@ def main():
         log_interval=cfg["trainer"]["log_interval"],
         save_dir=cfg["trainer"]["save_dir"],
         eval_every=cfg["trainer"]["eval_every"],
-        target_metric="miou_fg",
+        target_metric=cfg["trainer"].get("target_metric", "miou_fg"),
         save_every_epoch=cfg["trainer"].get("save_every_epoch", True),
+        save_every_n_epochs=cfg["trainer"].get("save_every_n_epochs", 0),
         metrics_csv=cfg["trainer"].get("metrics_csv", "metrics.csv"),
+        iter_log_path=cfg["trainer"].get("iter_log_path", ""),
         profile_timing=cfg["trainer"].get("profile_timing", True),
         profile_gpu=cfg["trainer"].get("profile_gpu", True),
     )

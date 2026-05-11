@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import csv
+import json
 import math
 import os
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import Callable, Optional, TextIO
 
 import torch
 import torch.nn as nn
@@ -42,7 +43,9 @@ class TrainerConfig:
     eval_every: int = 1
     target_metric: str = "miou_fg"  # which metric guides best-checkpointing
     save_every_epoch: bool = True   # also write epoch_NNN.pth alongside last/best
+    save_every_n_epochs: int = 0    # if >0, only write epoch_NNN.pth every N epochs (overrides save_every_epoch). best.pth + last.pth still update every epoch.
     metrics_csv: str = "metrics.csv"  # appended every epoch under save_dir
+    iter_log_path: str = ""         # if non-empty, write one JSONL line per optimizer step into this file (under save_dir if relative)
     profile_timing: bool = True     # measure data/forward/backward wall time (tiny overhead: one torch.cuda.synchronize per step)
     profile_gpu: bool = True        # log per-epoch GPU memory (allocated/peak) and utilization%
 
@@ -117,6 +120,19 @@ class Trainer:
         self.logger = get_logger("trainer")
         os.makedirs(cfg.save_dir, exist_ok=True)
         self._csv_path = os.path.join(cfg.save_dir, cfg.metrics_csv) if cfg.metrics_csv else None
+        # Per-step iteration log (one JSONL line per optimizer step). Useful for
+        # post-hoc plotting of loss/lr/timing at sub-epoch granularity without
+        # re-running training. Empty path disables it. Relative paths land
+        # under save_dir for tidiness.
+        self._iter_log_fp: Optional[TextIO] = None
+        if cfg.iter_log_path:
+            iter_path = cfg.iter_log_path
+            if not os.path.isabs(iter_path):
+                iter_path = os.path.join(cfg.save_dir, iter_path)
+            os.makedirs(os.path.dirname(iter_path) or ".", exist_ok=True)
+            # Append mode so resumed runs keep prior history.
+            self._iter_log_fp = open(iter_path, "a", encoding="utf-8")
+            self._iter_log_path = iter_path
         self._csv_keys: list[str] = []  # columns lazily expand as new metrics show up
         self._csv_rows: list[dict] = []  # all rows in memory; rewritten each append
         if self._csv_path and os.path.exists(self._csv_path):
@@ -211,6 +227,14 @@ class Trainer:
         profile = bool(getattr(self.cfg, "profile_timing", True))
         cuda_sync = (self.device.type == "cuda") and profile
         t_step_end = time.perf_counter()  # marks end of previous step
+        # Accumulator for the per-optimizer-step JSONL row. We sum the loss
+        # components across the ``accum`` micro-batches that contribute to a
+        # single optimizer step and divide by ``accum`` when the step fires.
+        # Without this, the JSONL would only capture the last micro-batch and
+        # ignore the other ``accum-1``, making the per-step curve ``accum``-times
+        # noisier than advertised.
+        step_loss_accum: dict = {}
+        step_microbatches = 0
         for step, batch in enumerate(self.train_loader):
             t_batch_ready = time.perf_counter()
             x = batch["input"].to(self.device, non_blocking=True)
@@ -224,6 +248,9 @@ class Trainer:
             log = {k: float(v.item() if torch.is_tensor(v) else v)
                    for k, v in loss_dict.items() if torch.is_tensor(v) or isinstance(v, (int, float))}
             meters.update(log, n=x.size(0))
+            for k, v in log.items():
+                step_loss_accum[k] = step_loss_accum.get(k, 0.0) + v
+            step_microbatches += 1
 
             if (step + 1) % accum == 0:
                 if self.cfg.grad_clip > 0:
@@ -242,6 +269,24 @@ class Trainer:
                            f"lr {lr:.4g} | "
                            + " ".join(f"{k}={v:.4f}" for k, v in avg.items()))
                     self.logger.info(msg)
+
+                # Per-step JSONL row (independent of console log_interval —
+                # captures *every* optimizer step). Loss components are the
+                # mean across all ``step_microbatches`` micro-batches that
+                # contributed to this optimizer step (i.e. the same effective
+                # batch the optimizer just stepped on), not just the last one.
+                if self._iter_log_fp is not None:
+                    n = max(step_microbatches, 1)
+                    step_avg = {k: v / n for k, v in step_loss_accum.items()}
+                    row = {
+                        "epoch": self.state.epoch,
+                        "step": self.state.global_step,
+                        "lr": float(self.optimizer.param_groups[0]["lr"]),
+                        **step_avg,
+                    }
+                    self._iter_log_fp.write(json.dumps(row) + "\n")
+                step_loss_accum = {}
+                step_microbatches = 0
 
             # End-of-step sync + timing.
             if cuda_sync:
@@ -286,6 +331,27 @@ class Trainer:
         return result
 
     # ------------------------------------------------------------------
+    def _close_iter_log(self) -> None:
+        """Idempotently flush + close the per-step JSONL log file handle.
+
+        Called from ``fit()``'s ``finally`` clause so the file is properly
+        released even if training is interrupted by CUDA OOM, NaN, KeyboardInterrupt,
+        or any other exception. On Windows (the target platform of the local-training
+        notebook), an unreleased handle would prevent another process from reading
+        the file, so explicit cleanup matters.
+        """
+        if self._iter_log_fp is not None:
+            try:
+                self._iter_log_fp.flush()
+            except Exception:
+                pass
+            try:
+                self._iter_log_fp.close()
+            except Exception:
+                pass
+            self._iter_log_fp = None
+
+    # ------------------------------------------------------------------
     def fit(self) -> TrainState:
         # On resume, ``self.state.epoch`` is the index of the *last completed*
         # epoch (it was saved after that epoch's epoch_NNN.pth was written), so
@@ -293,6 +359,13 @@ class Trainer:
         # the already-completed epoch and advance global_step / scheduler past
         # their checkpointed values.
         start_epoch = self.state.epoch + 1 if self.state.global_step > 0 else 0
+        try:
+            return self._fit_loop(start_epoch)
+        finally:
+            self._close_iter_log()
+
+    # ------------------------------------------------------------------
+    def _fit_loop(self, start_epoch: int) -> TrainState:
         for epoch in range(start_epoch, self.cfg.epochs):
             self.state.epoch = epoch
             train_metrics = self.train_one_epoch()
@@ -337,9 +410,21 @@ class Trainer:
                     self.save_checkpoint("best.pth", val_metrics)
 
             self.save_checkpoint("last.pth", val_metrics)
-            if self.cfg.save_every_epoch:
+            # Per-epoch checkpoints. ``save_every_n_epochs > 0`` takes
+            # precedence over ``save_every_epoch`` so long runs (e.g. 150
+            # epochs) don't fill the disk with 150 checkpoints.
+            if self.cfg.save_every_n_epochs > 0:
+                if (epoch + 1) % self.cfg.save_every_n_epochs == 0 \
+                        or epoch == self.cfg.epochs - 1:
+                    self.save_checkpoint(f"epoch_{epoch:03d}.pth", val_metrics)
+            elif self.cfg.save_every_epoch:
                 self.save_checkpoint(f"epoch_{epoch:03d}.pth", val_metrics)
             self._append_metrics_row(epoch, train_metrics, val_metrics)
+            # Flush per-step log so the file is up-to-date on disk if the
+            # process is killed mid-run (or the kernel restarts). The actual
+            # close is in fit()'s finally clause, see _close_iter_log().
+            if self._iter_log_fp is not None:
+                self._iter_log_fp.flush()
         return self.state
 
     # ------------------------------------------------------------------
