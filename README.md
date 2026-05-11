@@ -127,16 +127,13 @@ tools/                                    # CLI-входы
 
 notebooks/                                # «оркестраторы» — каждый ноутбук = одна платформа
   colab_train.ipynb                       # Google Colab (Pro A100 / Free T4) — обучение
-  kaggle_train.ipynb                      # Kaggle (T4 ×2 / P100, бесплатно 30 ч/нед)
   local_train_rgbd_multitask.ipynb        # ЭТАП 6b: Windows + RTX 4060, 150 эпох × 512px
-  visualize.ipynb                         # отчётные графики для всех платформ
+  visualize.ipynb                         # отчётные графики (Colab и локально)
 
 scripts/smoke_test.py                     # 30-секундный smoke-тест на 8 синт. сценах
                                           #   (binary / angle / multitask + resume)
 
 docs/
-  progress_report.md                      # отчёт версии 1 (после обучения angle-режима)
-  progress_report_v2.md                   # отчёт версии 2 (после переключения на multitask)
   progress_report_final.md                # финальный отчёт (этап 5) — главный источник цифр
   multitask_phase2.md                     # обоснование перехода на multitask + new metrics
   visualization.md                        # описание viz-модуля и notebooks/visualize.ipynb
@@ -144,7 +141,6 @@ docs/
   local_training_windows.md               # ЭТАП 6b: установка под Windows + RTX 4060 (train)
   training_metrics.md                     # расшифровка ВСЕХ полей train-лога (для пользователя)
   realsense_setup.md                      # ЭТАП 6a: установка pyrealsense2 + использование скриптов
-  yandex_datasphere.md                    # как запустить на Yandex DataSphere (рублёвая альтернатива)
 ```
 
 Не в git (см. `.gitignore`): `datasets/`, `train_results/`, `outputs/`, `*.zip`,
@@ -154,18 +150,16 @@ docs/
 
 ## 4. Выберите путь запуска
 
-> Все четыре пути приходят к одному и тому же чекпоинту `best.pth` + `metrics.csv` + `resolved_config.yaml` — выбор зависит только от того, какое железо доступно.
+> Все три пути приходят к одному и тому же чекпоинту `best.pth` + `metrics.csv` + `resolved_config.yaml` — выбор зависит только от того, какое железо доступно.
 
 | Путь | Где | Когда удобно | Стартовая точка |
 |---|---|---|---|
 | **A. Google Colab** | браузер, T4 (free) или A100 (Pro) | нет GPU локально; хочется попробовать без установки | [`notebooks/colab_train.ipynb`](notebooks/colab_train.ipynb) |
-| **B. Kaggle Notebooks** | браузер, T4 ×2 / P100 (free, 30 ч/нед) | нет Pro, хочется бесплатно | [`notebooks/kaggle_train.ipynb`](notebooks/kaggle_train.ipynb) |
-| **C. Локально, RTX 3060 6 GB** | Windows / Linux | визуализация и небольшие эксперименты | [`docs/local_setup_windows.md`](docs/local_setup_windows.md) |
-| **D. Локально, RTX 4060 8 GB** | Windows + VS Code | полноценное обучение 150 эпох × 512px | [`notebooks/local_train_rgbd_multitask.ipynb`](notebooks/local_train_rgbd_multitask.ipynb) + [`docs/local_training_windows.md`](docs/local_training_windows.md) |
-| **E. Yandex DataSphere** | браузер, T4/V100/A100, RUB | нужна оплата в рублях / нативный доступ к Я.Диску | [`docs/yandex_datasphere.md`](docs/yandex_datasphere.md) |
+| **B. Локально, RTX 3060 6 GB** | Windows / Linux | визуализация и небольшие эксперименты | [`docs/local_setup_windows.md`](docs/local_setup_windows.md) |
+| **C. Локально, RTX 4060 8 GB** | Windows + VS Code | полноценное обучение 150 эпох × 512px | [`notebooks/local_train_rgbd_multitask.ipynb`](notebooks/local_train_rgbd_multitask.ipynb) + [`docs/local_training_windows.md`](docs/local_training_windows.md) |
 
 Архивы Jacquard V2 (12 zip-файлов) лежат на публичном Я.Диске:
-**https://disk.yandex.ru/d/Je56nUcC9hiHFQ** — все ноутбуки умеют тянуть их оттуда автоматически (Colab/Kaggle через `gdown`-стиль, local через REST-API Я.Диска параллельно в 4 потока).
+**https://disk.yandex.ru/d/Je56nUcC9hiHFQ** — Colab-ноутбук тянет их оттуда автоматически через REST-API Я.Диска, локальный ноутбук — параллельно в 4 потока. Альтернативно архив можно скачать вручную и положить рядом с ноутбуком (см. соответствующую ячейку).
 
 ---
 
@@ -665,7 +659,7 @@ trainer:
 - **`mask_mode=multitask` ≠ `mask_mode=angle`** в метрических числах: их `miou_fg` ИЗМЕРЯЕТ РАЗНОЕ. Apples-to-apples сравнение возможно только через `val_miou_fg_ang` (см. [docs/multitask_phase2.md](docs/multitask_phase2.md)).
 - **Депт нормируется robust 1/99 percentile**, а не min/max — это важно для cross-domain (Cornell, D435).
 - **Stereo depth содержит NaN'ы**. Включается через `augmentation.use_stereo_depth_p` — это ключевая аугментация для sim2real. Если NaN'ы мешают на этапе отладки, выставите 0.0 и тренируйте на perfect_depth.
-- **Не модифицируйте `colab_train.ipynb`** при работе над локальным/Kaggle ноутбуками — он должен оставаться Colab-совместимым.
+- **Не модифицируйте `colab_train.ipynb`** при работе над локальным ноутбуком — он должен оставаться Colab-совместимым.
 - **`configs/*.yaml` — единственная правильная точка изменения гиперпараметров.** Не хардкодьте image_size, batch_size и тому подобное в ноутбуках — параметризуйте через CLI-overrides.
 - **Trainer уже умеет всё, что нужно для прод-обучения** (AMP / accum / resume / per-step JSONL / target_metric). Прежде чем писать «свой» train loop, прочитайте `grasp_seg/engine/trainer.py:fit` — велик шанс, что нужный режим уже есть как параметр.
 - **PR-ы рекомендуется делать узкими и атомарными.** История PR-ов проекта — в [docs/progress_report_final.md § 8.1](docs/progress_report_final.md#81-pr-история-текущей-стадии); средний размер PR'а — одно явное изменение (один модуль, одна задача).
@@ -685,15 +679,13 @@ python tools/train.py --config configs/multitask.yaml dataset.splits_path=splits
 ## 18. Ссылки
 
 **Документы проекта:**
-- [docs/progress_report_final.md](docs/progress_report_final.md) — финальный отчёт (главный источник цифр)
-- [docs/progress_report.md](docs/progress_report.md) / [docs/progress_report_v2.md](docs/progress_report_v2.md) — отчёты ранних этапов
+- [docs/progress_report_final.md](docs/progress_report_final.md) — финальный отчёт (главный источник цифр этапа 5)
 - [docs/multitask_phase2.md](docs/multitask_phase2.md) — переход на multitask + обоснование `miou_fg_ang`
 - [docs/visualization.md](docs/visualization.md) — описание viz-модуля и `notebooks/visualize.ipynb`
 - [docs/local_setup_windows.md](docs/local_setup_windows.md) — Windows + RTX 3060 (визуализация)
 - [docs/local_training_windows.md](docs/local_training_windows.md) — Windows + RTX 4060 (обучение)
 - [docs/training_metrics.md](docs/training_metrics.md) — расшифровка всех полей train-лога
 - [docs/realsense_setup.md](docs/realsense_setup.md) — D435: установка, форматы, скрипты
-- [docs/yandex_datasphere.md](docs/yandex_datasphere.md) — Yandex DataSphere (T4/V100/A100, RUB)
 
 **Внешние:**
 - HRNet (статья): https://arxiv.org/abs/1908.07919

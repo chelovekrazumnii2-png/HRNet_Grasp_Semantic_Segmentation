@@ -7,7 +7,7 @@
 # doesn't drown the disk in checkpoints.
 #
 # Why 512?
-#   - 384×384 is what every previous Colab/Kaggle run used. Bumping to
+#   - 384×384 is what every previous cloud GPU run used. Bumping to
 #     512×512 keeps more detail of small objects (and Cornell scenes)
 #     and is the highest power-of-2 stride-32-aligned resolution that
 #     still fits with batch=2 + AMP on 8 GB VRAM (forward+backward

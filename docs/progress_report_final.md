@@ -4,7 +4,7 @@
 **Текущий статус:** все три модели обучены до сходимости (RGB multitask, RGB-D multitask, RGB-D angle); пайплайн визуализации, кросс-доменная оценка на Cornell и интерпретируемость (heatmap + Grad-CAM) собраны.
 **Репозиторий:** https://github.com/chelovekrazumnii2-png/HRNet_Grasp_Semantic_Segmentation
 
-> Этот отчёт обобщает [progress_report.md](progress_report.md) и [progress_report_v2.md](progress_report_v2.md) и расширяет их фактическими финальными метриками трёх моделей и работой, выполненной поверх обучения (визуализация, кросс-домен Cornell, интерпретируемость).
+> Этот отчёт обобщает фактические финальные метрики трёх моделей и работу, выполненную поверх обучения (визуализация, кросс-домен Cornell, интерпретируемость).
 
 ---
 
@@ -14,7 +14,7 @@
 
 **Что сделано:**
 
-1. **Каркас + обучение** (см. v1/v2): три mask-режима (`binary`/`angle`/`multitask`), три вариантa loss, object-wise split 80/10/10, AMP fp16, per-epoch checkpoints + `--resume`, рецепты для Colab Pro A100 / Kaggle T4 / RTX 3060.
+1. **Каркас + обучение:** три mask-режима (`binary`/`angle`/`multitask`), три вариантa loss, object-wise split 80/10/10, AMP fp16, per-epoch checkpoints + `--resume`, рецепты для Colab Pro A100 и локальной RTX 3060/4060.
 
 2. **Три обученных модели:**
    - `hrnet_w18_rgb_multitask` — 3 канала, multitask GG-CNN-стиль (`pos`/`cos2θ`/`sin2θ`/`width`).
@@ -115,17 +115,15 @@ epoch | train_loss | val_mIoU_fg | val_Dice_fg | val_ang_mae_deg
 
 ## 3. Хронология работы
 
-### 3.1. Базовый пайплайн (детали — в [progress_report.md](progress_report.md), [progress_report_v2.md](progress_report_v2.md))
+### 3.1. Базовый пайплайн
 
 | Этап | Описание | Статус |
 |---|---|---|
 | 1. Каркас `grasp_seg/` | data + models + losses + engine + utils + 3 mask-режима | ✅ |
 | 2. Локальная RTX 3060 | batch=8, ~42 ч/прогон → переход на облако | ✅ |
 | 3. Per-epoch checkpoints + resume | Безопасные длинные прогоны | ✅ |
-| 4. Облачные рецепты | Colab Pro A100 + Kaggle T4 | ✅ |
+| 4. Облачные рецепты | Colab Pro A100 | ✅ |
 | 5. RGB-only конфиг | `_patch_first_conv` для 3-канального input | ✅ |
-| 6. Pre-unpacked Kaggle | Экономия 45 мин/сессия | ✅ |
-| 7. Multi-GPU попытка | Откат: CPU bottleneck на T4×2 | ✅ (как negative result) |
 | 8. Финальный батчинг A100 | batch=48 — sweet spot | ✅ |
 
 ### 3.2. Что добавилось после v2 (текущая сессия)
@@ -222,7 +220,7 @@ IoU(pred, gt) > 0.25   AND   |angle(pred) − angle(gt)| < 30°
 | **8.1** | `heatmap_viz.figure_per_head_heatmap` | Раскладка всех голов модели для одной сцены |
 | **8.2** | `heatmap_viz.figure_grad_cam` | Grad-CAM по последнему общему слою HRNet |
 
-Конфиг ноутбука (первая ячейка): `ENV` (`local`/`colab`/`kaggle`), `JACQUARD_ROOT`, `CORNELL_ROOT`, `RUNS` (mapping name → run-dir), `NUM_*` knobs. Подгружаются те модели из `RUNS`, у которых существует папка с `resolved_config.yaml` и `best.pth` — недостающие пропускаются с warning'ом.
+Конфиг ноутбука (первая ячейка): `ENV` (`local`/`colab`), `JACQUARD_ROOT`, `CORNELL_ROOT`, `RUNS` (mapping name → run-dir), `NUM_*` knobs. Подгружаются те модели из `RUNS`, у которых существует папка с `resolved_config.yaml` и `best.pth` — недостающие пропускаются с warning'ом.
 
 ### 5.1. Heatmap-визуализация (PR #8)
 
@@ -316,7 +314,6 @@ hrnet_w18_rgbd_angle         |   <TBD>   |   <TBD>   |  <TBD>   |  <TBD>
 - **Jacquard V2:** https://jacquard.liris.cnrs.fr/
 - **Cornell Grasp Dataset:** http://pr.cs.cornell.edu/grasping/rect_data/data.php
 - **Pretrained backbone:** https://huggingface.co/timm/hrnet_w18.ms_aug_in1k
-- **Прошлые отчёты:** [progress_report.md](progress_report.md), [progress_report_v2.md](progress_report_v2.md)
 - **Документация визуализации:** [visualization.md](visualization.md)
 - **Локальный setup (Windows):** [../local_setup_windows.md](../local_setup_windows.md) (если опубликован), либо `local_setup_windows.md` в корне репо
 - **Файл-источник метрик:** `train_results/<run>/metrics.csv` (по одному на каждый run)
@@ -345,4 +342,4 @@ hrnet_w18_rgbd_angle         |   <TBD>   |   <TBD>   |  <TBD>   |  <TBD>
 - **Multitask GG-CNN-формулировка даёт +34 п.п. mIoU_fg** против classical 19-class классификации углов — это самое крупное изменение качества за всю историю проекта.
 - **Cross-domain пайплайн** на Cornell готов и работает (loader + frame-перевод + side-by-side + top-1 acc + failure-catalog + heatmap/Grad-CAM); цифры зависят от выбранного `NUM_CORNELL_EVAL` и подтягиваются прямо в ноутбуке.
 
-Все технические компоненты — модульные, переиспользуемые, документированные. Код и ноутбук готовы для воспроизведения как на локальной RTX 3060 (после описанных в `local_setup_windows.md` шагов), так и на Colab/Kaggle.
+Все технические компоненты — модульные, переиспользуемые, документированные. Код и ноутбук готовы для воспроизведения как на локальной RTX 3060/4060 (после описанных в `local_setup_windows.md` / `local_training_windows.md` шагов), так и на Colab.
