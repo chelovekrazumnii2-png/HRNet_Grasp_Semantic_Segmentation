@@ -133,7 +133,7 @@ def main():
     val_ds = JacquardV2GraspSeg(split.val, ds_cfg, aug=val_aug, is_training=False)
 
     # ``persistent_workers`` and ``prefetch_factor`` materially affect epoch
-    # throughput on Colab/Kaggle (saves ~5 s of worker re-spawn per epoch and
+    # throughput on cloud GPUs (saves ~5 s of worker re-spawn per epoch and
     # keeps the GPU fed during forward/backward) but are only meaningful when
     # num_workers>0; guard accordingly so a num_workers=0 debug run still
     # works.
@@ -168,9 +168,8 @@ def main():
     }
     model = build_model(model_cfg)
 
-    # Auto-enable DataParallel when the host exposes >1 visible CUDA device
-    # (e.g. Kaggle's T4 x2 accelerator). Set CUDA_VISIBLE_DEVICES=0 in the
-    # environment to force single-GPU training.
+    # Auto-enable DataParallel when the host exposes >1 visible CUDA device.
+    # Set CUDA_VISIBLE_DEVICES=0 in the environment to force single-GPU training.
     if device.type == "cuda" and torch.cuda.device_count() > 1:
         logger.info(f"wrapping model in DataParallel across {torch.cuda.device_count()} GPUs")
         model = nn.DataParallel(model)

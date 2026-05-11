@@ -172,11 +172,10 @@ def _load_scene_from_path(
     resolved RGB path.
 
     Cornell ships pre-rendered depth as ``pcdNNNNd.tiff`` next to the RGB
-    file in some redistributions (e.g. the Kaggle mirror). When present,
-    we load it and normalise it with the same robust 1/99-percentile
-    rule used by :mod:`grasp_seg.data.jacquard_v2` so that the resulting
-    depth distribution looks similar to the one the RGB-D models were
-    trained on.
+    file in some redistributions. When present, we load it and normalise
+    it with the same robust 1/99-percentile rule used by
+    :mod:`grasp_seg.data.jacquard_v2` so that the resulting depth
+    distribution looks similar to the one the RGB-D models were trained on.
     """
     img = cv2.imread(rgb_path, cv2.IMREAD_COLOR)
     if img is None:
@@ -197,9 +196,9 @@ def _load_scene_from_path(
         if os.path.isfile(cand):
             try:
                 depth_raw = _load_depth(cand)
-                # Resize depth to RGB dims if mismatched (rare — Cornell
-                # is usually 640×480 for both, but Kaggle dumps occasionally
-                # ship a 320×240 depth).
+                # Resize depth to RGB dims if mismatched (rare — Cornell is
+                # usually 640×480 for both, but some redistributions ship a
+                # 320×240 depth instead).
                 if depth_raw.shape[:2] != rgb.shape[:2]:
                     depth_raw = cv2.resize(
                         depth_raw, (rgb.shape[1], rgb.shape[0]),

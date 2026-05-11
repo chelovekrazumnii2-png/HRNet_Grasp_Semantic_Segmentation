@@ -1,9 +1,8 @@
 # Phase 2a — multitask experiment
 
 This document describes the **multitask** training mode added in PR #12 (Plan B
-from `docs/progress_report_v2.md` §6, Variant B). It is a contingency
-experiment we plan to launch if the running `mask_mode=angle` Colab A100 run
-plateaus below the **mIoU_fg ≥ 0.40** target.
+/ Variant B). It is a contingency experiment we plan to launch if the running
+`mask_mode=angle` Colab A100 run plateaus below the **mIoU_fg ≥ 0.40** target.
 
 ## TL;DR
 
@@ -46,7 +45,7 @@ discretisation artefacts of the 18-bin classification head.
   detection than 18-bin classification heads on Cornell / Jacquard.
 
 The expected gain for our setup is **+5–10 % mIoU_fg_ang** vs the angle run
-(see `docs/progress_report_v2.md` §6 Variant B). If the baseline finishes at
+(see Variant B). If the baseline finishes at
 ~0.33, multitask should reach ~0.38–0.43.
 
 ## Comparing multitask vs angle metrics fairly
