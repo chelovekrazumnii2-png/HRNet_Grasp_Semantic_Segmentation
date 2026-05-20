@@ -262,10 +262,10 @@ def main() -> None:
                    help="Optional sub-directory under --out (e.g. '01').")
     p.add_argument("--start-id", type=int, default=None,
                    help="Force the first pcd ID instead of auto-detecting.")
-    p.add_argument("--width", type=int, default=1280)
-    p.add_argument("--height", type=int, default=720)
-    p.add_argument("--fps", type=int, default=30)
-    p.add_argument("--depth-preset", default="highaccuracy",
+    p.add_argument("--width", type=int, default=640)
+    p.add_argument("--height", type=int, default=480)
+    p.add_argument("--fps", type=int, default=15)
+    p.add_argument("--depth-preset", default="highdensity",
                    choices=["default", "highaccuracy", "highdensity",
                             "medium"])
     p.add_argument("--mode", default="manual",
@@ -378,7 +378,6 @@ def main() -> None:
         pipeline.stop()
         if not args.no_window:
             cv2.destroyAllWindows()
-
 
 if __name__ == "__main__":
     main()

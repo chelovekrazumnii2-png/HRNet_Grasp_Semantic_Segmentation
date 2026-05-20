@@ -3,7 +3,7 @@
 These are the figures that go into the "Dataset" section of the report:
 
 - :func:`figure_raw_with_grasps`  — original RGB + all GT rectangles.
-- :func:`figure_resize_pipeline`  — original (with rect) vs 384×384 input vs
+- :func:`figure_resize_pipeline`  — original (with rect) vs 384×384/512x512 input vs
   rasterised compact-polygon target.
 - :func:`figure_mask_modes`       — same scene rasterised under
   binary / angle / multitask masks (side-by-side) for both RGB-only and
@@ -30,6 +30,7 @@ from ..data.jacquard_v2 import _load_depth, _load_rgb, _normalise_depth
 from ..data.transforms import AugConfig
 from . import draw, palette
 
+IMG_RES = 512 #384 512
 
 # ---------------------------------------------------------------------------
 # Loading helpers (re-exported for the notebook)
@@ -61,29 +62,61 @@ def load_jacquard_scene(grasp_file: str, image_size: Optional[int] = None):
 # Figures
 # ---------------------------------------------------------------------------
 
+
+# def figure_raw_with_grasps(
+#     grasp_file: str,
+#     max_grasps: int = 30,
+#     title: Optional[str] = None,
+# ):
+#     """RGB at native resolution with all GT grasp rectangles drawn."""
+#     rgb, _depth, grasps, _ = load_jacquard_scene(grasp_file, image_size=None)
+#     overlay = draw.draw_grasp_list(rgb, grasps, max_n=max_grasps,
+#                                    color=(0.1, 1.0, 0.2), thickness=2)
+#     fig, ax = plt.subplots(1, 1, figsize=(7, 7))
+#     ax.imshow(np.clip(overlay, 0, 1))
+#     ax.set_axis_off()
+#     ax.set_title(
+#         title or f"Исходное изображение (1024×1024) + {len(grasps)} GT-захватов",
+#         fontsize=11,
+#     )
+#     fig.tight_layout()
+#     return fig
+
 def figure_raw_with_grasps(
     grasp_file: str,
-    max_grasps: int = 30,
+    max_grasps: int = 10,
     title: Optional[str] = None,
 ):
-    """RGB at native resolution with all GT grasp rectangles drawn."""
+    """RGB at native resolution - left: original, right: with GT grasp rectangles."""
     rgb, _depth, grasps, _ = load_jacquard_scene(grasp_file, image_size=None)
+    
+    # Создаём изображение с захватами
     overlay = draw.draw_grasp_list(rgb, grasps, max_n=max_grasps,
                                    color=(0.1, 1.0, 0.2), thickness=2)
-    fig, ax = plt.subplots(1, 1, figsize=(7, 7))
-    ax.imshow(np.clip(overlay, 0, 1))
-    ax.set_axis_off()
-    ax.set_title(
-        title or f"Исходное изображение (1024×1024) + {len(grasps)} GT-захватов",
+    
+    # Создаём фигуру с двумя подграфиками
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 7))
+    
+    # Первое изображение - исходное без прямоугольников
+    ax1.imshow(np.clip(rgb, 0, 1))
+    ax1.set_axis_off()
+    ax1.set_title("Исходное изображение", fontsize=11)
+    
+    # Второе изображение - с захватами
+    ax2.imshow(np.clip(overlay, 0, 1))
+    ax2.set_axis_off()
+    ax2.set_title(
+        title or f"GT-захваты ({len(grasps)} шт.)",
         fontsize=11,
     )
+    
     fig.tight_layout()
     return fig
 
 
 def figure_resize_pipeline(
     grasp_file: str,
-    image_size: int = 384,
+    image_size: int = IMG_RES,
     num_angle_bins: int = 18,
     length_scale: float = 1.0 / 3.0,
 ):
@@ -119,7 +152,7 @@ def figure_resize_pipeline(
 
 def figure_mask_modes(
     grasp_file: str,
-    image_size: int = 384,
+    image_size: int = IMG_RES,
     num_angle_bins: int = 18,
     length_scale: float = 1.0 / 3.0,
 ):
@@ -172,7 +205,7 @@ def figure_mask_modes(
 
 def figure_compact_vs_full(
     grasp_file: str,
-    image_size: int = 384,
+    image_size: int = IMG_RES,
     num_angle_bins: int = 18,
 ):
     """Compact-polygon vs full grasp rectangle as the training target."""
@@ -291,7 +324,7 @@ def _aug_depth_dropout(frac: float = 0.05, seed: int = 0):
 
 def figure_augmentation_steps(
     grasp_file: str,
-    image_size: int = 384,
+    image_size: int = IMG_RES,
     seed: int = 0,
 ):
     """Walk through every major augmentation in :class:`AugConfig`."""

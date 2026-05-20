@@ -165,8 +165,8 @@ def main() -> None:
     print(f"[realsense] writing to    : {args.out} (next idx = {next_idx})")
     print("Controls: 's' = save frame  |  'q' / ESC = quit")
 
-    win_rgb = "RealSense D435 — RGB"
-    win_depth = "RealSense D435 — Depth (jet colormap)"
+    win_rgb = "RealSense D435 - RGB"
+    win_depth = "RealSense D435 - Depth (jet colormap)"
     cv2.namedWindow(win_rgb, cv2.WINDOW_NORMAL)
     cv2.namedWindow(win_depth, cv2.WINDOW_NORMAL)
 

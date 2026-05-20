@@ -1,0 +1,362 @@
+"""Cornell Grasp Dataset reader (Jiang et al., 2011).
+
+For each scene index ``NNNN`` we expect:
+
+* ``pcdNNNNr.png``    — RGB image (640×480 or similar).
+* ``pcdNNNN.txt``     — point-cloud (we don't use it for visualisation).
+* ``pcdNNNNcpos.txt`` — positive grasp rectangles, 4 corner ``(x, y)``
+  pairs per rectangle (each rectangle takes 4 lines).
+* ``pcdNNNNcneg.txt`` — negative grasp rectangles (same format).
+
+Two dataset layouts are supported transparently:
+
+* a **flat** directory containing all ``pcdNNNN*`` files;
+* the **original** layout with 10 sub-directories ``01/`` … ``10/`` (and an
+  optional ``backgrounds/`` folder, which we skip).
+
+The loader is recursive: pass any directory that *contains* the scene
+files — either flat or nested — and it will find them.
+
+The dataset has no per-pixel ground-truth segmentation mask. We expose
+the rectangles as :class:`grasp_seg.data.grasp_rect.Grasp` instances
+(``angle`` recovered from the long edge of the corner polygon and
+length/width inferred from edge magnitudes), and an optional helper to
+*rasterise* them with the same compact-polygon (``length_scale=1/3``)
+trick used by :class:`grasp_seg.data.grasp_rect.rasterize_grasp_mask`.
+
+Use this loader strictly for inference / cross-domain visualisation —
+the project trains exclusively on Jacquard V2.
+"""
+from __future__ import annotations
+
+import os
+import re
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
+
+import cv2
+import numpy as np
+
+from .grasp_rect import Grasp, rasterize_grasp_mask
+from .jacquard_v2 import _load_depth, _normalise_depth
+
+
+_SCENE_RE = re.compile(r"pcd(\d+)r\.png$")
+
+# Sub-directories ignored during the recursive walk.
+_IGNORED_DIRS = {"backgrounds"}
+
+
+def _order_corners_clockwise_yx(corners: np.ndarray) -> np.ndarray:
+    """Return corners in clockwise order around their centroid.
+
+    Input/output shape is (4, 2) in (y, x). Cornell files usually store
+    corners in sequence, but in practice the order can be inconsistent
+    across samples or after intermediate processing. Normalising the
+    order makes edge extraction and angle recovery stable.
+    """
+    if corners.shape != (4, 2):
+        raise ValueError(f"Expected (4, 2) corners, got {corners.shape}")
+    centre = corners.mean(axis=0)
+    rel = corners - centre
+    angles = np.arctan2(rel[:, 0], rel[:, 1])  # atan2(dy, dx)
+    order = np.argsort(angles)
+    ordered = corners[order]
+
+    # Rotate the cycle so that the first point is the top-most one
+    # (and then the left-most among ties). This gives deterministic
+    # serialisation/visualisation while preserving the polygon order.
+    start = min(range(4), key=lambda i: (ordered[i, 0], ordered[i, 1]))
+    ordered = np.roll(ordered, -start, axis=0)
+
+    # Ensure clockwise orientation in image coordinates (y grows down).
+    # Signed area > 0 here corresponds to clockwise traversal.
+    x = ordered[:, 1]
+    y = ordered[:, 0]
+    signed = float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
+    if signed < 0:
+        ordered = ordered[[0, 3, 2, 1]]
+    return ordered
+
+
+def _wrap_angle_half_pi(theta: float) -> float:
+    """Wrap angle to (-pi/2, pi/2]."""
+    return float((theta + np.pi / 2.0) % np.pi - np.pi / 2.0)
+
+
+
+def _grasp_from_corners(corners: np.ndarray) -> Optional[Grasp]:
+    """Build a :class:`Grasp` from a 4×2 ``(y, x)`` corner array.
+
+    Key fixes compared with the old implementation:
+    1. Corner order is normalised before taking neighbour edges.
+    2. Opposite edges are averaged, which is more stable under annotation noise.
+    3. The angle is converted from the rectangle long-edge direction to the
+       internal :class:`Grasp` convention used by this project.
+    """
+    if corners.shape != (4, 2) or not np.all(np.isfinite(corners)):
+        return None
+
+    corners = _order_corners_clockwise_yx(corners.astype(np.float64))
+    p0, p1, p2, p3 = corners
+
+    e01 = p1 - p0  # (dy, dx)
+    e12 = p2 - p1
+    e23 = p3 - p2
+    e30 = p0 - p3
+
+    len_01 = float(np.linalg.norm(e01))
+    len_12 = float(np.linalg.norm(e12))
+    len_23 = float(np.linalg.norm(e23))
+    len_30 = float(np.linalg.norm(e30))
+
+    if min(len_01, len_12, len_23, len_30) < 1.0:
+        return None
+
+    side_a = 0.5 * (len_01 + len_23)
+    side_b = 0.5 * (len_12 + len_30)
+
+    vec_a = 0.5 * (e01 - e23)
+    vec_b = 0.5 * (e12 - e30)
+
+    if side_a >= side_b:
+        long_vec = vec_a
+        length = side_a
+        width = side_b
+    else:
+        long_vec = vec_b
+        length = side_b
+        width = side_a
+
+    if np.linalg.norm(long_vec) < 1e-6:
+        return None
+
+    # Rectangle orientation in image coordinates from its long side.
+    theta_edge = float(np.arctan2(long_vec[0], long_vec[1]))
+
+    # The project's Grasp class uses a different zero-angle convention
+    # than raw Cornell edges. Empirically and geometrically, converting
+    # the edge angle by +pi/2 aligns the reconstructed polygon with the
+    # original annotated rectangle.
+    theta = _wrap_angle_half_pi(theta_edge + np.pi / 2.0)
+
+    centre = corners.mean(axis=0)
+    return Grasp(
+        center=centre.astype(np.float64),
+        angle=theta,
+        length=float(length),
+        width=float(width),
+    )
+
+
+def _read_corners_file(path: str) -> List[np.ndarray]:
+    """Parse a Cornell ``cpos`` / ``cneg`` file into a list of 4×2 arrays."""
+    if not os.path.isfile(path):
+        return []
+    with open(path, "r") as f:
+        lines = [ln.strip() for ln in f if ln.strip()]
+    rects: List[np.ndarray] = []
+    for i in range(0, len(lines) - 3, 4):
+        try:
+            xy = np.array([
+                [float(v) for v in ln.split()] for ln in lines[i:i + 4]
+            ], dtype=np.float64)  # (4, 2) as (x, y)
+        except ValueError:
+            continue
+        if xy.shape != (4, 2):
+            continue
+        # Convert to (y, x) to match the rest of the project.
+        yx = np.stack([xy[:, 1], xy[:, 0]], axis=1)
+        rects.append(yx)
+    return rects
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+@dataclass
+class CornellSample:
+    scene_id: str
+    rgb_path: str
+    rgb: np.ndarray            # float32 HxWx3 in [0, 1]
+    pos_grasps: List[Grasp]
+    neg_grasps: List[Grasp]
+    depth: Optional[np.ndarray] = None       # float32 HxW in [0, 1] or None
+    depth_path: Optional[str] = None
+    depth_raw: Optional[np.ndarray] = None   # raw (pre-normalisation) depth
+
+
+def _index_scenes(root: str) -> Dict[str, str]:
+    """Walk ``root`` recursively and map ``scene_id → absolute RGB path``.
+
+    Skips ``backgrounds/`` sub-directories. Hidden directories (``.git``,
+    ``__pycache__``…) are also skipped.
+    """
+    index: Dict[str, str] = {}
+    for cur, dirs, files in os.walk(root):
+        # Mutate ``dirs`` in place to prune the walk.
+        dirs[:] = [d for d in dirs
+                   if d.lower() not in _IGNORED_DIRS
+                   and not d.startswith(".")]
+        for name in files:
+            m = _SCENE_RE.match(name)
+            if m is not None:
+                index[m.group(1)] = os.path.join(cur, name)
+    return index
+
+
+def index_scenes(root: str) -> Dict[str, str]:
+    """Public alias of :func:`_index_scenes`: ``scene_id → RGB path``.
+
+    Useful for callers that want to load many scenes — build the index
+    once and pass it to :func:`load_scene` to avoid re-walking the tree.
+    """
+    return _index_scenes(root)
+
+
+def list_scenes(root: str, *, index: Optional[Dict[str, str]] = None) -> List[str]:
+    """Return a sorted list of scene IDs (e.g. ``["0100", "0101", ...]``).
+
+    Works for both the flat layout and the original 10-sub-directory
+    Cornell layout (``01/`` … ``10/`` — ``backgrounds/`` is ignored).
+    Pass a pre-built ``index`` (from :func:`index_scenes`) to avoid the
+    ``os.walk`` if you already have one.
+    """
+    if index is None:
+        index = _index_scenes(root)
+    return sorted(index.keys())
+
+
+def _load_scene_from_path(
+    scene_id: str,
+    rgb_path: str,
+    *,
+    load_depth: bool = True,
+) -> CornellSample:
+    """Internal worker: read RGB + cpos/cneg (+ optional depth) from a
+    resolved RGB path.
+
+    Cornell ships pre-rendered depth as ``pcdNNNNd.tiff`` next to the RGB
+    file in some redistributions. When present, we load it and normalise
+    it with the same robust 1/99-percentile rule used by
+    :mod:`grasp_seg.data.jacquard_v2` so that the resulting depth
+    distribution looks similar to the one the RGB-D models were trained on.
+    """
+    img = cv2.imread(rgb_path, cv2.IMREAD_COLOR)
+    if img is None:
+        raise FileNotFoundError(rgb_path)
+    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+
+    scene_dir = os.path.dirname(rgb_path)
+    pos_path = os.path.join(scene_dir, f"pcd{scene_id}cpos.txt")
+    neg_path = os.path.join(scene_dir, f"pcd{scene_id}cneg.txt")
+    pos = [_grasp_from_corners(c) for c in _read_corners_file(pos_path)]
+    neg = [_grasp_from_corners(c) for c in _read_corners_file(neg_path)]
+
+    depth_path: Optional[str] = None
+    depth_raw: Optional[np.ndarray] = None
+    depth_norm: Optional[np.ndarray] = None
+    if load_depth:
+        cand = os.path.join(scene_dir, f"pcd{scene_id}d.tiff")
+        if os.path.isfile(cand):
+            try:
+                depth_raw = _load_depth(cand)
+                # Resize depth to RGB dims if mismatched (rare — Cornell is
+                # usually 640×480 for both, but some redistributions ship a
+                # 320×240 depth instead).
+                if depth_raw.shape[:2] != rgb.shape[:2]:
+                    depth_raw = cv2.resize(
+                        depth_raw, (rgb.shape[1], rgb.shape[0]),
+                        interpolation=cv2.INTER_NEAREST,
+                    )
+                depth_norm = _normalise_depth(depth_raw)
+                depth_path = cand
+            except Exception:
+                depth_raw = None
+                depth_norm = None
+                depth_path = None
+
+    return CornellSample(
+        scene_id=scene_id,
+        rgb_path=rgb_path,
+        rgb=rgb,
+        pos_grasps=[g for g in pos if g is not None],
+        neg_grasps=[g for g in neg if g is not None],
+        depth=depth_norm,
+        depth_path=depth_path,
+        depth_raw=depth_raw,
+    )
+
+
+def load_scene(
+    root: str,
+    scene_id: str,
+    *,
+    index: Optional[Dict[str, str]] = None,
+    load_depth: bool = True,
+) -> CornellSample:
+    """Load a single Cornell scene by its 4-digit ID.
+
+    Pass a pre-built ``index`` to skip the recursive ``os.walk``. When
+    iterating over many scenes, build the index once and reuse it across
+    calls (or use :func:`iter_scenes`, which already does this).
+    Set ``load_depth=False`` to skip the ``pcdNNNNd.tiff`` lookup if you
+    only need RGB + grasps.
+    """
+    if index is not None:
+        rgb_path = index.get(scene_id)
+    else:
+        # Fast path for a single call: try the flat layout first; only
+        # walk the tree if the file isn't right at ``root``.
+        flat = os.path.join(root, f"pcd{scene_id}r.png")
+        rgb_path = flat if os.path.isfile(flat) else _index_scenes(root).get(scene_id)
+    if rgb_path is None:
+        raise FileNotFoundError(
+            f"Cornell scene pcd{scene_id}r.png not found under {root}"
+        )
+    return _load_scene_from_path(scene_id, rgb_path, load_depth=load_depth)
+
+
+def iter_scenes(
+    root: str,
+    scene_ids: Optional[List[str]] = None,
+    *,
+    load_depth: bool = True,
+):
+    """Iterate ``CornellSample`` instances over the dataset.
+
+    Builds the recursive index once and reuses it across all scenes (no
+    redundant ``os.walk`` per scene).
+    """
+    index = _index_scenes(root)
+    ids = scene_ids if scene_ids is not None else sorted(index)
+    for sid in ids:
+        rgb_path = index.get(sid)
+        if rgb_path is None:
+            raise FileNotFoundError(
+                f"Cornell scene pcd{sid}r.png not found under {root}"
+            )
+        yield _load_scene_from_path(sid, rgb_path, load_depth=load_depth)
+
+
+def rasterize_cornell_mask(
+    grasps: List[Grasp],
+    shape: Tuple[int, int],
+    mode: str = "binary",
+    num_angle_bins: int = 18,
+    length_scale: float = 1.0 / 3.0,
+) -> dict:
+    """Rasterise Cornell positive grasps into a pseudo ground-truth mask.
+
+    This is a convenience used by the visualisation panels — Cornell does
+    not officially publish per-pixel masks. Predicted-vs-rasterised IoU
+    therefore carries an inherent rasterisation bias and should be read
+    as a *qualitative* check; the canonical Cornell metric is the
+    Jacquard-style grasp-rectangle accuracy implemented in
+    :func:`grasp_seg.viz.decoder.jacquard_match`.
+    """
+    return rasterize_grasp_mask(
+        grasps, shape, mode=mode, num_angle_bins=num_angle_bins,
+        length_scale=length_scale,
+    )
